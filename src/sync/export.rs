@@ -97,6 +97,18 @@ impl<'a> Uploader<'a> {
         Ok(id)
     }
 
+    fn touch(&mut self, local_id: i64) {
+        self.touched.push(local_id);
+    }
+
+    fn cached(&self, local_id: i64) -> Option<&JmapId> {
+        self.cache.get(&local_id)
+    }
+
+    fn store(&mut self, local_id: i64, id: JmapId) {
+        self.cache.insert(local_id, id);
+    }
+
     fn invalidate(&mut self, local_id: i64) {
         self.cache.remove(&local_id);
     }
@@ -125,6 +137,7 @@ struct Net {
     limits: Limits,
     session: Session,
     dry_run: bool,
+    threads: usize,
 }
 
 fn has_rows(conn: &Connection, ty: ObjectType) -> bool {
@@ -148,6 +161,7 @@ pub fn run(common: CommonConfig, config: ExportConfig) -> Result<Summary, Error>
         limits: connected.limits,
         session: connected.session.clone(),
         dry_run: ctx.dry_run(),
+        threads: ctx.common.threads,
     };
 
     let work = work_list(&ctx.conn, &config, &connected, &logger);
@@ -438,6 +452,8 @@ mod sieve;
 mod uidtype;
 
 mod email;
+
+mod blobpool;
 
 mod common {
     use super::*;

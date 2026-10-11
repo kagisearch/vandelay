@@ -34,6 +34,8 @@ use crate::jmap::wire::email::Email;
 use crate::jmap::wire::file_node::{FileNode, NodeType};
 use crate::jmap::wire::sieve_script::SieveScript;
 use crate::logging::{LEVEL_DEFAULT, LEVEL_PROGRESS, Logger};
+use crate::sync::emailmeta::email_meta_from_blob;
+use crate::sync::keys::index_to_json;
 use crate::sync::{CommonConfig, Context, ImportConfig, RunOutcome, Summary, TypeCounts};
 use crate::types::ObjectType;
 
@@ -107,17 +109,33 @@ impl LocalResolver for DbResolver<'_> {
     }
 }
 
-struct PrefetchedBlobs<'a> {
-    conn: &'a Connection,
-    bytes: &'a HashMap<String, Vec<u8>>,
+struct EmailMeta {
+    match_key: String,
+    date_header: Option<String>,
 }
 
-impl BlobIntern for PrefetchedBlobs<'_> {
+struct StoredBlob {
+    local_id: i64,
+    email: Option<EmailMeta>,
+}
+
+#[derive(Default)]
+struct StoredBlobs(HashMap<String, StoredBlob>);
+
+impl StoredBlobs {
+    fn get(&self, jmap_blob_id: &str, kind: &str) -> Result<&StoredBlob, JmapError> {
+        self.0
+            .get(jmap_blob_id)
+            .ok_or_else(|| JmapError::malformed(format!("{kind} blob missing")))
+    }
+}
+
+impl BlobIntern for &StoredBlobs {
     fn intern(&mut self, jmap_blob_id: &str) -> Result<i64, JmapError> {
-        let data = self.bytes.get(jmap_blob_id).ok_or_else(|| {
-            JmapError::malformed(format!("blob {jmap_blob_id} was not prefetched"))
-        })?;
-        Ok(db::blobs::intern_blob(self.conn, data)?)
+        self.0
+            .get(jmap_blob_id)
+            .map(|b| b.local_id)
+            .ok_or_else(|| JmapError::malformed(format!("blob {jmap_blob_id} was not prefetched")))
     }
 }
 
@@ -462,9 +480,9 @@ fn insert_objects(
     for batch in ordered.chunks(200) {
         let blob_refs = blob_references(ty, batch.iter().map(|&i| &objects[i]));
         let blobs = if blob_refs.is_empty() {
-            HashMap::new()
+            StoredBlobs::default()
         } else {
-            download_blobs(net, blob_refs, threads, logger)
+            download_blobs(&ctx.conn, net, ty, blob_refs, threads, logger)?
         };
         let tx = ctx
             .conn
@@ -562,11 +580,13 @@ fn blob_references<'a>(ty: ObjectType, objects: impl Iterator<Item = &'a Value>)
 }
 
 fn download_blobs(
+    conn: &Connection,
     net: &Net,
+    ty: ObjectType,
     refs: Vec<BlobRef>,
     threads: usize,
     logger: &Logger,
-) -> HashMap<String, Vec<u8>> {
+) -> Result<StoredBlobs, Error> {
     let workers = effective_workers(threads, &net.limits, true);
     let net_arc = Arc::new(net.clone());
     let pool: Pool<BlobRef, DlMsg> = Pool::new(workers, {
@@ -587,11 +607,23 @@ fn download_blobs(
     for r in refs {
         pool.submit(r);
     }
-    let mut out = HashMap::new();
-    for (blob_id, res) in pool.finish() {
+    let mut out = HashMap::with_capacity(total);
+    for _ in 0..total {
+        let Ok((blob_id, res)) = pool.results().recv() else {
+            break;
+        };
         match res {
             Ok(bytes) => {
-                out.insert(blob_id, bytes);
+                let local_id = db::blobs::intern_blob(conn, &bytes)
+                    .map_err(|e| Error::Partial(e.to_string()))?;
+                let email = (ty == ObjectType::Email).then(|| {
+                    let (index, date_header) = email_meta_from_blob(&bytes);
+                    EmailMeta {
+                        match_key: index_to_json(&index),
+                        date_header,
+                    }
+                });
+                out.insert(blob_id, StoredBlob { local_id, email });
             }
             Err(e) => {
                 logger.warn(&format!("blob {blob_id} download failed: {e}"));
@@ -601,7 +633,7 @@ fn download_blobs(
     if logger.enabled(LEVEL_PROGRESS) {
         eprintln!("import: downloaded {}/{} blobs", out.len(), total);
     }
-    out
+    Ok(StoredBlobs(out))
 }
 
 fn order_objects(
@@ -649,7 +681,7 @@ fn insert_one(
     ty: ObjectType,
     source_id: i64,
     obj: &Value,
-    blobs: &HashMap<String, Vec<u8>>,
+    blobs: &StoredBlobs,
     logger: &Logger,
 ) -> Result<i64, JmapError> {
     let resolver = DbResolver { conn, source_id };
@@ -676,14 +708,13 @@ fn insert_one(
         }
         ObjectType::Email => {
             let mut w: Email = serde_json::from_value(obj.clone())?;
-            let data = blobs
-                .get(&w.blob_id.0)
+            let stored = blobs.get(&w.blob_id.0, "email")?;
+            let meta = stored
+                .email
+                .as_ref()
                 .ok_or_else(|| JmapError::malformed("email blob missing"))?;
-            let blob_local = db::blobs::intern_blob(conn, data)?;
-            let (index, date_header) = crate::sync::emailmeta::email_meta_from_blob(data);
-            let mm = crate::sync::keys::index_to_json(&index);
             if w.received_at.is_none() {
-                w.received_at = date_header.as_deref().and_then(parse_utc_date);
+                w.received_at = meta.date_header.as_deref().and_then(parse_utc_date);
                 let id = obj.get("id").and_then(Value::as_str).unwrap_or("?");
                 let raw = obj
                     .get("receivedAt")
@@ -697,37 +728,29 @@ fn insert_one(
                     }
                 ));
             }
-            mapping::insert_email(conn, &w, blob_local, &mm, &resolver)
+            mapping::insert_email(conn, &w, stored.local_id, &meta.match_key, &resolver)
         }
         ObjectType::SieveScript => {
             let w: SieveScript = serde_json::from_value(obj.clone())?;
-            let data = blobs
-                .get(&w.blob_id.0)
-                .ok_or_else(|| JmapError::malformed("sieve blob missing"))?;
-            let blob_local = db::blobs::intern_blob(conn, data)?;
+            let blob_local = blobs.get(&w.blob_id.0, "sieve")?.local_id;
             mapping::insert_sieve_script(conn, &w, blob_local)
         }
         ObjectType::FileNode => {
             let w: FileNode = serde_json::from_value(obj.clone())?;
             let blob_local = match (w.effective_node_type(), &w.blob_id) {
-                (NodeType::File, Some(b)) => {
-                    let data = blobs
-                        .get(&b.0)
-                        .ok_or_else(|| JmapError::malformed("file blob missing"))?;
-                    Some(db::blobs::intern_blob(conn, data)?)
-                }
+                (NodeType::File, Some(b)) => Some(blobs.get(&b.0, "file")?.local_id),
                 _ => None,
             };
             mapping::insert_file_node(conn, &w, blob_local, &resolver)
         }
         ObjectType::ContactCard => {
             let w = serde_json::from_value(obj.clone())?;
-            let mut bi = PrefetchedBlobs { conn, bytes: blobs };
+            let mut bi = blobs;
             mapping::insert_contact_card(conn, &w, &resolver, &mut bi)
         }
         ObjectType::CalendarEvent => {
             let w = serde_json::from_value(obj.clone())?;
-            let mut bi = PrefetchedBlobs { conn, bytes: blobs };
+            let mut bi = blobs;
             mapping::insert_calendar_event(conn, &w, &resolver, &mut bi)
         }
     }
@@ -876,9 +899,9 @@ fn update_objects(
     for batch in objects.chunks(200) {
         let blob_refs = blob_references(ty, batch.iter());
         let blobs = if blob_refs.is_empty() {
-            HashMap::new()
+            StoredBlobs::default()
         } else {
-            download_blobs(net, blob_refs, threads, logger)
+            download_blobs(&ctx.conn, net, ty, blob_refs, threads, logger)?
         };
         let tx = ctx
             .conn
@@ -915,7 +938,7 @@ fn update_one(
     source_id: i64,
     local_id: i64,
     obj: &Value,
-    blobs: &HashMap<String, Vec<u8>>,
+    blobs: &StoredBlobs,
 ) -> Result<bool, JmapError> {
     let resolver = DbResolver { conn, source_id };
     match ty {
@@ -942,33 +965,25 @@ fn update_one(
         ObjectType::Email => mapping::update_email(conn, local_id, obj, &resolver),
         ObjectType::SieveScript => {
             let w: SieveScript = serde_json::from_value(obj.clone())?;
-            let data = blobs
-                .get(&w.blob_id.0)
-                .ok_or_else(|| JmapError::malformed("sieve blob missing"))?;
-            let blob_local = db::blobs::intern_blob(conn, data)?;
+            let blob_local = blobs.get(&w.blob_id.0, "sieve")?.local_id;
             mapping::update_sieve_script(conn, local_id, &w, blob_local)
         }
         ObjectType::FileNode => {
             let w: FileNode = serde_json::from_value(obj.clone())?;
             let blob_local = match (w.effective_node_type(), &w.blob_id) {
-                (NodeType::File, Some(b)) => {
-                    let data = blobs
-                        .get(&b.0)
-                        .ok_or_else(|| JmapError::malformed("file blob missing"))?;
-                    Some(db::blobs::intern_blob(conn, data)?)
-                }
+                (NodeType::File, Some(b)) => Some(blobs.get(&b.0, "file")?.local_id),
                 _ => None,
             };
             mapping::update_file_node(conn, local_id, &w, blob_local, &resolver)
         }
         ObjectType::ContactCard => {
             let w = serde_json::from_value(obj.clone())?;
-            let mut bi = PrefetchedBlobs { conn, bytes: blobs };
+            let mut bi = blobs;
             mapping::update_contact_card(conn, local_id, &w, &resolver, &mut bi)
         }
         ObjectType::CalendarEvent => {
             let w = serde_json::from_value(obj.clone())?;
-            let mut bi = PrefetchedBlobs { conn, bytes: blobs };
+            let mut bi = blobs;
             mapping::update_calendar_event(conn, local_id, &w, &resolver, &mut bi)
         }
     }

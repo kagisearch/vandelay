@@ -929,6 +929,80 @@ fn export_round_trip_and_convergence() {
 
 #[test]
 #[ignore = "requires Docker"]
+fn export_emails_in_multiple_import_batches() {
+    // With setMaxObjects lowered to 2 the email export spans several Email/import batches and still converges.
+    let fx = seeder::provision(base_url()).expect("provision");
+    let src = fx.account("test1").expect("test1");
+    let tgt = fx.account("test4").expect("test4");
+    let archive = tmp_archive("batches");
+
+    let imp = ImportConfig {
+        connect: ConnectConfig {
+            url: base_url().to_owned(),
+            auth: basic("test1"),
+            account: AccountSelector::Id(src.account_id.clone()),
+        },
+        objects: None,
+        allow_source_change: false,
+    };
+    let s = sync::import_jmap::run(common(&archive, false), imp).expect("import");
+    assert!(!s.any_failed());
+    let local_emails = {
+        let conn = Connection::open(&archive).unwrap();
+        count(&conn, "emails")
+    };
+    assert!(
+        local_emails > 2,
+        "need more than one batch of emails: {local_emails}"
+    );
+
+    let mut small = Map::new();
+    small.insert("setMaxObjects".to_owned(), json!(2));
+    let _guard = JmapSettingsGuard::override_settings(small);
+
+    let probe = HttpClient::new(basic("test4"), RetryPolicy::new(5), true);
+    let session = Session::discover(&probe, base_url()).expect("discover");
+    let limits = session.core_limits().expect("core limits");
+    assert_eq!(
+        limits.max_objects_in_set, 2,
+        "setMaxObjects override is advertised"
+    );
+
+    let e1 = sync::export::run(
+        common(&archive, false),
+        export_cfg("test4", &tgt.account_id, false),
+    )
+    .expect("export 1");
+    assert!(
+        !e1.per_type.iter().any(|(_, c)| c.failed > 0),
+        "export 1 had failures: {e1:?}"
+    );
+    let emails = e1
+        .per_type
+        .iter()
+        .find(|(t, _)| *t == "Email")
+        .map(|(_, c)| c.created)
+        .unwrap_or(0);
+    assert_eq!(
+        emails as i64, local_emails,
+        "every email created across batches"
+    );
+
+    let e2 = sync::export::run(
+        common(&archive, false),
+        export_cfg("test4", &tgt.account_id, false),
+    )
+    .expect("export 2");
+    let created_2: u64 = e2.per_type.iter().map(|(_, c)| c.created).sum();
+    assert_eq!(created_2, 0, "second export is convergent: {e2:?}");
+
+    drop(_guard);
+    let _ = std::fs::remove_file(&archive);
+    seeder::teardown(base_url()).expect("teardown");
+}
+
+#[test]
+#[ignore = "requires Docker"]
 fn export_prune_destroys_unmatched() {
     let fx = seeder::provision(base_url()).expect("provision");
     let big = fx.account("test1").expect("test1");

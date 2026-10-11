@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file. This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.0.12] - 2026-10-11
+
+### Added
+
+### Changed
+- Export: emails are now uploaded in parallel and sent in `Email/import` batches sized by the server's `maxObjectsInSet`, instead of one at a time (fixes #41)
+
+### Fixed
+- IMAP: non-selectable (`\Noselect`, `\NonExistent`) parent folders were dropped and their children imported at the top level (fixes #47)
+- JMAP: import held every blob of a 200-object page in memory, so large messages could exhaust memory (fixes #46)
+
 ## [1.0.11] - 2026-09-28
 
 ### Added
