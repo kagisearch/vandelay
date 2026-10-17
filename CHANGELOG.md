@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file. This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.0.13] - 2026-10-XX
+
+### Added
+
+### Changed
+
+### Fixed
+- MS Exchange EWS: `--auth-bearer` without an inline value required `--ews-client-id` even when the token was set in `VANDELAY_TOKEN`
+- MS Exchange Graph: the device code flow did not request `Files.Read`, so the default run skipped OneDrive with a warning
+
 ## [1.0.12] - 2026-10-11
 
 ### Added
