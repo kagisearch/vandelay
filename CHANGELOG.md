@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file. This projec
 ## [1.0.13] - 2026-10-XX
 
 ### Added
+- WebDAV, CalDAV, CardDAV: `--replace-source` removes other recorded sources of the same kind, and the items imported from them, before importing, so a moved share leaves a single tree in the archive.
 
 ### Changed
 

@@ -18,7 +18,7 @@ use crate::jmap::account::AccountSelector;
 use crate::jmap::http::Auth;
 use crate::logging::Logger;
 use crate::secret;
-use crate::sync::import_dav::{DavAuth, DavImportConfig, DavKindArg};
+use crate::sync::import_dav::{DavAuth, DavImportConfig, DavKindArg, SourceChange};
 use crate::sync::import_exchange_ews::{EwsAuth, EwsImportConfig};
 use crate::sync::import_exchange_graph::{GraphAuth, GraphImportConfig};
 use crate::sync::import_imap::{ImapAuth, ImapImportConfig};
@@ -494,6 +494,13 @@ pub struct DavImportArgs {
     )]
     allow_source_change: bool,
 
+    #[arg(
+        long,
+        conflicts_with = "allow_source_change",
+        help = "Remove other recorded sources of this kind, and their items, before importing"
+    )]
+    replace_source: bool,
+
     #[command(flatten)]
     global: GlobalArgs,
 
@@ -715,7 +722,11 @@ fn resolve_dav_import(args: DavImportArgs, kind: DavKindArg) -> Result<Action, E
             allow_cleartext: args.allow_cleartext,
             dav_connections,
             multiget_batch,
-            allow_source_change: args.allow_source_change,
+            source_change: match (args.replace_source, args.allow_source_change) {
+                (true, _) => SourceChange::Replace,
+                (false, true) => SourceChange::Allow,
+                (false, false) => SourceChange::Reject,
+            },
         },
     ))
 }
@@ -1555,5 +1566,40 @@ mod tests {
             }
             other => panic!("expected Usage error, got {:?}", other.map(|_| ())),
         }
+    }
+
+    fn webdav_source_change(extra: &[&str]) -> Result<SourceChange, clap::Error> {
+        let mut argv = vec![
+            "vandelay",
+            "import",
+            "webdav",
+            "--url",
+            "https://dav.example/files/u/",
+            "--auth-bearer",
+            "tok",
+        ];
+        argv.extend_from_slice(extra);
+        argv.push("archive.sqlite");
+        let cli = Cli::try_parse_from(argv)?;
+        match cli.resolve() {
+            Ok(Action::ImportDav(_, config)) => Ok(config.source_change),
+            _ => panic!("expected ImportDav"),
+        }
+    }
+
+    // --replace-source maps to Replace and cannot be combined with --allow-source-change.
+    #[test]
+    fn dav_source_change_flags_resolve() {
+        let _g = lock();
+        assert_eq!(webdav_source_change(&[]).unwrap(), SourceChange::Reject);
+        assert_eq!(
+            webdav_source_change(&["--allow-source-change"]).unwrap(),
+            SourceChange::Allow
+        );
+        assert_eq!(
+            webdav_source_change(&["--replace-source"]).unwrap(),
+            SourceChange::Replace
+        );
+        assert!(webdav_source_change(&["--replace-source", "--allow-source-change"]).is_err());
     }
 }

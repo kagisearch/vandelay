@@ -1339,7 +1339,7 @@ fn dry_run_writes_nothing_but_emits_per_collection_counts() {
     use std::path::PathBuf;
     use vandelay::logging::Logger;
     use vandelay::sync::CommonConfig;
-    use vandelay::sync::import_dav::{DavAuth, DavImportConfig, DavKindArg, run};
+    use vandelay::sync::import_dav::{DavAuth, DavImportConfig, DavKindArg, SourceChange, run};
 
     let mut server = mockito::Server::new();
     let url = server.url();
@@ -1407,7 +1407,7 @@ fn dry_run_writes_nothing_but_emits_per_collection_counts() {
         allow_cleartext: true,
         dav_connections: 1,
         multiget_batch: 50,
-        allow_source_change: false,
+        source_change: SourceChange::Reject,
     };
     let summary = run(common, config).expect("dry-run ok");
 
@@ -1452,7 +1452,7 @@ fn dav_source_change_protection_fires_across_users_on_same_root() {
     use std::path::PathBuf;
     use vandelay::logging::Logger;
     use vandelay::sync::CommonConfig;
-    use vandelay::sync::import_dav::{DavAuth, DavImportConfig, DavKindArg, run};
+    use vandelay::sync::import_dav::{DavAuth, DavImportConfig, DavKindArg, SourceChange, run};
 
     let mut server = mockito::Server::new();
     let url = server.url();
@@ -1560,7 +1560,7 @@ fn dav_source_change_protection_fires_across_users_on_same_root() {
         allow_cleartext: true,
         dav_connections: 1,
         multiget_batch: 50,
-        allow_source_change: false,
+        source_change: SourceChange::Reject,
     };
 
     run(common(&archive), config("secondary@vandelay.org", "passA")).expect("user A import ok");
@@ -1682,7 +1682,7 @@ fn caldav_import_config(url: &str) -> vandelay::sync::import_dav::DavImportConfi
         allow_cleartext: true,
         dav_connections: 1,
         multiget_batch: 8,
-        allow_source_change: false,
+        source_change: vandelay::sync::import_dav::SourceChange::Reject,
     }
 }
 
@@ -1887,4 +1887,191 @@ fn dav_import_reports_both_phases_when_every_collection_fails() {
         "both phases are reported even when every collection failed"
     );
     let _ = std::fs::remove_file(&archive);
+}
+
+fn webdav_share(server: &mut mockito::Server, prefix: &str, body: &str) -> Vec<mockito::Mock> {
+    let url = server.url();
+    let root = format!(
+        r#"<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>{url}{prefix}</d:href>
+    <d:propstat>
+      <d:prop><d:resourcetype><d:collection/></d:resourcetype><d:displayname>share</d:displayname></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>{url}{prefix}docs/</d:href>
+    <d:propstat>
+      <d:prop><d:resourcetype><d:collection/></d:resourcetype><d:displayname>docs</d:displayname></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>"#
+    );
+    let docs = format!(
+        r#"<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>{url}{prefix}docs/</d:href>
+    <d:propstat>
+      <d:prop><d:resourcetype><d:collection/></d:resourcetype><d:displayname>docs</d:displayname></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>{url}{prefix}docs/a.txt</d:href>
+    <d:propstat>
+      <d:prop><d:resourcetype/><d:getcontenttype>text/plain</d:getcontenttype><d:getetag>"a1"</d:getetag></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>"#
+    );
+    vec![
+        multistatus_response(server, "PROPFIND", prefix, &root),
+        multistatus_response(server, "PROPFIND", &format!("{prefix}docs/"), &docs),
+        server
+            .mock("GET", format!("{prefix}docs/a.txt").as_str())
+            .with_status(200)
+            .with_header("content-type", "text/plain")
+            .with_body(body)
+            .create(),
+    ]
+}
+
+fn webdav_import_config(
+    url: &str,
+    source_change: vandelay::sync::import_dav::SourceChange,
+) -> vandelay::sync::import_dav::DavImportConfig {
+    vandelay::sync::import_dav::DavImportConfig {
+        kind: vandelay::sync::import_dav::DavKindArg::Webdav,
+        source_change,
+        ..caldav_import_config(url)
+    }
+}
+
+#[test]
+fn allow_source_change_keeps_the_moved_share_old_tree() {
+    use vandelay::sync::import_dav::{SourceChange, run};
+
+    let mut server = mockito::Server::new();
+    let url = server.url();
+    let _old = webdav_share(&mut server, "/old/u/", "old\n");
+    let _new = webdav_share(&mut server, "/new/u/", "new\n");
+    let archive = dav_archive();
+
+    run(
+        dav_common(&archive),
+        webdav_import_config(&format!("{url}/old/u/"), SourceChange::Reject),
+    )
+    .expect("old share import");
+    run(
+        dav_common(&archive),
+        webdav_import_config(&format!("{url}/new/u/"), SourceChange::Allow),
+    )
+    .expect("new share import");
+
+    let (nodes, sources) = (
+        row_count(&archive, "file_nodes"),
+        row_count(&archive, "sources"),
+    );
+    let _ = std::fs::remove_file(&archive);
+    assert_eq!(nodes, 4, "both trees stay side by side");
+    assert_eq!(sources, 2);
+}
+
+#[test]
+fn replace_source_drops_the_moved_share_old_tree() {
+    use vandelay::sync::import_dav::{SourceChange, run};
+
+    let mut server = mockito::Server::new();
+    let url = server.url();
+    let _old = webdav_share(&mut server, "/old/u/", "old\n");
+    let _new = webdav_share(&mut server, "/new/u/", "new\n");
+    let archive = dav_archive();
+
+    run(
+        dav_common(&archive),
+        webdav_import_config(&format!("{url}/old/u/"), SourceChange::Reject),
+    )
+    .expect("old share import");
+    let summary = run(
+        dav_common(&archive),
+        webdav_import_config(&format!("{url}/new/u/"), SourceChange::Replace),
+    )
+    .expect("new share import");
+    let rerun = run(
+        dav_common(&archive),
+        webdav_import_config(&format!("{url}/new/u/"), SourceChange::Reject),
+    );
+
+    let conn = rusqlite::Connection::open(&archive).unwrap();
+    let account: String = conn
+        .query_row("SELECT account_id FROM sources", [], |r| r.get(0))
+        .unwrap();
+    let orphans: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM file_nodes
+             WHERE id NOT IN (SELECT local_id FROM sync_id_dav)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    drop(conn);
+    let (nodes, sources, blobs) = (
+        row_count(&archive, "file_nodes"),
+        row_count(&archive, "sources"),
+        row_count(&archive, "blobs"),
+    );
+    let _ = std::fs::remove_file(&archive);
+
+    assert_eq!(nodes, 2, "only the new tree remains");
+    assert_eq!(orphans, 0);
+    assert_eq!(sources, 1);
+    assert!(account.ends_with("/new/u/"), "kept source is {account}");
+    assert_eq!(blobs, 1, "the old file's blob is collected");
+    let filenode = summary
+        .per_type
+        .iter()
+        .find(|(name, _)| *name == "filenode")
+        .expect("filenode counts");
+    assert_eq!(filenode.1.deleted, 2);
+    assert!(
+        rerun.is_ok(),
+        "once replaced, the archive records a single source: {rerun:?}"
+    );
+}
+
+#[test]
+fn dry_run_replace_source_keeps_the_old_tree() {
+    use vandelay::sync::import_dav::{SourceChange, run};
+
+    let mut server = mockito::Server::new();
+    let url = server.url();
+    let _old = webdav_share(&mut server, "/old/u/", "old\n");
+    let _new = webdav_share(&mut server, "/new/u/", "new\n");
+    let archive = dav_archive();
+
+    run(
+        dav_common(&archive),
+        webdav_import_config(&format!("{url}/old/u/"), SourceChange::Reject),
+    )
+    .expect("old share import");
+    let mut common = dav_common(&archive);
+    common.dry_run = true;
+    run(
+        common,
+        webdav_import_config(&format!("{url}/new/u/"), SourceChange::Replace),
+    )
+    .expect("dry-run");
+
+    let (nodes, sources) = (
+        row_count(&archive, "file_nodes"),
+        row_count(&archive, "sources"),
+    );
+    let _ = std::fs::remove_file(&archive);
+    assert_eq!(nodes, 2);
+    assert_eq!(sources, 1);
 }
