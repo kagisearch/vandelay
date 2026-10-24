@@ -26,13 +26,16 @@ use crate::jmap::blobxfer;
 use crate::jmap::connect::{self, Connected};
 use crate::jmap::error::JmapError;
 use crate::jmap::http::{Auth, HttpClient};
-use crate::jmap::request::{get_all, get_changes, get_objects, get_state, query_all_ids};
+use crate::jmap::request::{
+    URN_VACATION_RESPONSE, get_all, get_changes, get_objects, get_state, query_all_ids,
+};
 use crate::jmap::session::{Limits, Session};
 use crate::jmap::wire::JmapId;
 use crate::jmap::wire::common::parse_utc_date;
 use crate::jmap::wire::email::Email;
 use crate::jmap::wire::file_node::{FileNode, FileProps, NodeKind};
 use crate::jmap::wire::sieve_script::SieveScript;
+use crate::jmap::wire::vacation_response::{self, VacationResponse};
 use crate::logging::{LEVEL_DEFAULT, LEVEL_PROGRESS, Logger};
 use crate::sync::emailmeta::email_meta_from_blob;
 use crate::sync::keys::index_to_json;
@@ -261,6 +264,34 @@ fn run_into(
         summary.per_type.push((ty.jmap_name(), counts));
     }
 
+    if let Some(source_id) = source_id
+        && !ctx.dry_run()
+        && config
+            .objects
+            .as_ref()
+            .is_none_or(|s| s.contains(&ObjectType::SieveScript))
+        && net.session.may_support(&net.account, URN_VACATION_RESPONSE)
+    {
+        if logger.enabled(LEVEL_DEFAULT) {
+            eprintln!("import: {} ...", vacation_response::TYPE_NAME);
+        }
+        let mut counts = TypeCounts::default();
+        match import_vacation_response(&ctx.conn, &net, source_id) {
+            Ok(fetched) => counts.fetched = fetched,
+            Err(e) if e.aborts_run() => return Err(e),
+            Err(e) => {
+                logger.warn(&format!(
+                    "type {} aborted: {e}; continuing (run will exit 5)",
+                    vacation_response::TYPE_NAME
+                ));
+                counts.failed += 1;
+            }
+        }
+        summary
+            .per_type
+            .push((vacation_response::TYPE_NAME, counts));
+    }
+
     if ctx.dry_run() {
         print_dry_run(&dry_rows);
         *summary = Summary::default();
@@ -276,6 +307,28 @@ fn run_into(
     summary.retries_observed = ctx.client.retries_observed();
     summary.retry_after_sleeps = ctx.client.retry_after_sleeps();
     Ok(())
+}
+
+fn import_vacation_response(conn: &Connection, net: &Net, source_id: i64) -> Result<u64, Error> {
+    let got = get_all::<VacationResponse>(
+        &net.client,
+        &net.api,
+        &net.account,
+        vacation_response::TYPE_NAME,
+    )
+    .map_err(Error::from)?;
+    match got.list.into_iter().find(|v| !v.is_unset()) {
+        Some(vacation) => {
+            db::vacation_response::store(conn, source_id, &vacation)
+                .map_err(|e| Error::Partial(e.to_string()))?;
+            Ok(1)
+        }
+        None => {
+            db::vacation_response::clear(conn, source_id)
+                .map_err(|e| Error::Partial(e.to_string()))?;
+            Ok(0)
+        }
+    }
 }
 
 fn work_list(config: &ImportConfig, connected: &Connected) -> Vec<ObjectType> {

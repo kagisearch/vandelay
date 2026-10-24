@@ -2948,6 +2948,7 @@ dependencies = [
  "crossbeam-channel",
  "encodify",
  "flate2",
+ "hashify",
  "indexmap 2.14.2",
  "mail-parser",
  "mockito",
