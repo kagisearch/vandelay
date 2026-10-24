@@ -1814,6 +1814,122 @@ END:VCALENDAR
     let _ = std::fs::remove_file(&archive);
 }
 
+// Kerio Connect sends calendar-data with bare CR line breaks, raw or as &#13; (issue #48).
+#[test]
+fn kerio_bare_cr_calendar_data_imports() {
+    let mut server = mockito::Server::new();
+    let url = server.url();
+    let home = "/full-calendars/domain.ext/user/";
+    let coll = "/full-calendars/domain.ext/user/ceb087f2-0604-4c31-a70e-9f68e90600c6/";
+
+    let home_set = format!(
+        r#"<?xml version="1.0"?>
+<a:multistatus xmlns:a="DAV:" xmlns:f="urn:ietf:params:xml:ns:caldav">
+  <a:response>
+    <a:href>{coll}</a:href>
+    <a:propstat>
+      <a:prop>
+        <a:resourcetype><a:collection/><f:calendar/></a:resourcetype>
+        <a:displayname>Calendar</a:displayname>
+      </a:prop>
+      <a:status>HTTP/1.1 200 OK</a:status>
+    </a:propstat>
+  </a:response>
+</a:multistatus>"#
+    );
+    let _discovery = multistatus_response(&mut server, "PROPFIND", home, &home_set);
+
+    let item = |n: u32| format!("{coll}ceb087f2-0604-4c31-a70e-9f68e90600c6-0000000{n}.eml");
+    let listing = format!(
+        r#"<?xml version="1.0"?>
+<a:multistatus xmlns:a="DAV:">
+  <a:response>
+    <a:href>{}</a:href>
+    <a:propstat><a:prop><a:resourcetype/><a:getetag>"k1"</a:getetag></a:prop>
+      <a:status>HTTP/1.1 200 OK</a:status></a:propstat>
+  </a:response>
+  <a:response>
+    <a:href>{}</a:href>
+    <a:propstat><a:prop><a:resourcetype/><a:getetag>"k2"</a:getetag></a:prop>
+      <a:status>HTTP/1.1 200 OK</a:status></a:propstat>
+  </a:response>
+</a:multistatus>"#,
+        item(1),
+        item(2)
+    );
+    let _enumeration = multistatus_response(&mut server, "PROPFIND", coll, &listing);
+
+    let ical = |uid: &str, summary: &str, eol: &str| {
+        [
+            "BEGIN:VCALENDAR",
+            "PRODID:-//Kerio Technologies//Kerio Connect//EN",
+            "VERSION:2.0",
+            "BEGIN:VEVENT",
+            &format!("UID:{uid}"),
+            "DTSTAMP:20260101T000000Z",
+            "DTSTART:20260101T090000Z",
+            "DTEND:20260101T100000Z",
+            &format!("SUMMARY:{summary}"),
+            "X-LABEL:0",
+            "END:VEVENT",
+            "END:VCALENDAR",
+            "",
+        ]
+        .join(eol)
+    };
+    let data = format!(
+        r#"<?xml version="1.0"?>
+<a:multistatus xmlns:a="DAV:" xmlns:f="urn:ietf:params:xml:ns:caldav">
+  <a:response>
+    <a:href>{}</a:href>
+    <a:propstat><a:prop><a:getetag>"k1"</a:getetag>
+      <f:calendar-data><![CDATA[{}]]></f:calendar-data></a:prop>
+      <a:status>HTTP/1.1 200 OK</a:status></a:propstat>
+  </a:response>
+  <a:response>
+    <a:href>{}</a:href>
+    <a:propstat><a:prop><a:getetag>"k2"</a:getetag>
+      <f:calendar-data>{}</f:calendar-data></a:prop>
+      <a:status>HTTP/1.1 200 OK</a:status></a:propstat>
+  </a:response>
+</a:multistatus>"#,
+        item(1),
+        ical("k1@kerio", "Raw CR", "\r"),
+        item(2),
+        ical("k2@kerio", "Entity CR", "&#13;"),
+    );
+    let _multiget = multistatus_response(&mut server, "REPORT", coll, &data);
+
+    let archive = dav_archive();
+    let summary = vandelay::sync::import_dav::run(
+        dav_common(&archive),
+        caldav_import_config(&format!("{url}{home}")),
+    )
+    .expect("import");
+
+    let events = summary
+        .per_type
+        .iter()
+        .find(|(t, _)| *t == "calendarevent")
+        .map(|(_, c)| c.clone())
+        .expect("calendarevent counts");
+    assert_eq!(events.failed, 0, "{events:?}");
+    assert_eq!(events.fetched, 2, "{events:?}");
+
+    let conn = rusqlite::Connection::open(&archive).expect("open archive");
+    let mut titles: Vec<String> = conn
+        .prepare("SELECT json_extract(data, '$.title') FROM calendar_events")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    titles.sort_unstable();
+    assert_eq!(titles, ["Entity CR", "Raw CR"]);
+    drop(conn);
+    let _ = std::fs::remove_file(&archive);
+}
+
 #[test]
 fn credentials_rejected_during_discovery_still_aborts_the_run() {
     let mut server = mockito::Server::new();

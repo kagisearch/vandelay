@@ -10,10 +10,13 @@ All notable changes to this project will be documented in this file. This projec
 ### Changed
 - JMAP: `FileNode` now follows `draft-ietf-jmap-filenode-18`: nodes are typed by `@type` (`File`, `Directory`, `SymLink`), the media type is read from and written to `mediaType`, and each node carries only the properties its type defines. Servers that implement a draft older than -15 (`nodeType`, `type`) are no longer supported.
 - JMAP: the `executable` flag of a file is now imported and exported (existing archives gain the column on open).
+- CalDAV, CardDAV, Google Takeout: an iCalendar or vCard parse failure now says what was wrong and quotes the offending line, instead of only "parse failed".
 
 ### Fixed
 - MS Exchange EWS: `--auth-bearer` without an inline value required `--ews-client-id` even when the token was set in `VANDELAY_TOKEN`
 - MS Exchange Graph: the device code flow did not request `Files.Read`, so the default run skipped OneDrive with a warning
+- CalDAV, CardDAV: items with bare CR line breaks, as sent by Kerio Connect, failed with "icalendar parse failed" (fixes #48)
+- JMAP: `--account-name` from an administrator session resolved the account from `accountIdForPrincipal`, which RFC 9670 defines as the requester's own account; the data account is now taken from the Principal's `accounts` map
 
 ## [1.0.12] - 2026-10-11
 

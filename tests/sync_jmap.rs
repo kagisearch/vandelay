@@ -693,20 +693,44 @@ fn prune_non_tree_type_contact_card() {
 const ISSUE30_CARD_UID: &str = "vandelay-issue30-card";
 const ISSUE30_EVENT_UID: &str = "vandelay-issue30-event";
 
-fn data_uri_bytes(resource: &Value, uri_key: &str, expect_media_type: &str) -> Vec<u8> {
-    let uri = resource
-        .get(uri_key)
+struct Target<'a> {
+    client: &'a HttpClient,
+    session: &'a Session,
+    account: &'a str,
+}
+
+fn resource_bytes(
+    target: &Target<'_>,
+    resource: &Value,
+    uri_key: &str,
+    type_key: &str,
+    expect_media_type: &str,
+) -> Vec<u8> {
+    if let Some(uri) = resource.get(uri_key).and_then(Value::as_str) {
+        let prefix = format!("data:{expect_media_type};base64,");
+        let payload = uri
+            .strip_prefix(&prefix)
+            .unwrap_or_else(|| panic!("{uri_key} is not a {prefix}... data URI: {resource}"));
+        return STANDARD.decode(payload).expect("base64 payload");
+    }
+    let blob_id = resource
+        .get("blobId")
         .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("no {uri_key} on {resource}"));
-    assert!(
-        resource.get("blobId").is_none(),
-        "target must not hold a blobId for {uri_key}: {resource}"
+        .unwrap_or_else(|| panic!("neither {uri_key} nor blobId on {resource}"));
+    assert_eq!(
+        resource.get(type_key).and_then(Value::as_str),
+        Some(expect_media_type),
+        "embedded blob keeps its media type: {resource}"
     );
-    let prefix = format!("data:{expect_media_type};base64,");
-    let payload = uri
-        .strip_prefix(&prefix)
-        .unwrap_or_else(|| panic!("{uri_key} is not a {prefix}... data URI: {resource}"));
-    STANDARD.decode(payload).expect("base64 payload")
+    vandelay::jmap::blobxfer::download_bytes(
+        target.client,
+        target.session,
+        target.account,
+        blob_id,
+        expect_media_type,
+        "blob",
+    )
+    .unwrap_or_else(|e| panic!("target blobId {blob_id} does not download: {e}"))
 }
 
 #[test]
@@ -809,8 +833,13 @@ fn export_inlines_contact_and_event_blobs_instead_of_blob_ids() {
     let photo_resource = card
         .pointer("/media/photo")
         .unwrap_or_else(|| panic!("card has no media.photo: {card}"));
+    let target = Target {
+        client: &client,
+        session: &session,
+        account: &tgt.account_id,
+    };
     assert_eq!(
-        data_uri_bytes(photo_resource, "uri", "image/png"),
+        resource_bytes(&target, photo_resource, "uri", "mediaType", "image/png"),
         photo,
         "contact photo bytes survived the export: {card}"
     );
@@ -839,7 +868,7 @@ fn export_inlines_contact_and_event_blobs_instead_of_blob_ids() {
         .and_then(|m| m.values().next())
         .unwrap_or_else(|| panic!("event has no links: {event}"));
     assert_eq!(
-        data_uri_bytes(link, "href", "text/plain"),
+        resource_bytes(&target, link, "href", "contentType", "text/plain"),
         agenda,
         "calendar enclosure bytes survived the export: {event}"
     );
@@ -930,7 +959,7 @@ fn export_round_trip_and_convergence() {
 #[test]
 #[ignore = "requires Docker"]
 fn export_emails_in_multiple_import_batches() {
-    // With setMaxObjects lowered to 2 the email export spans several Email/import batches and still converges.
+    // With maxSetObjects lowered to 2 the email export spans several Email/import batches and still converges.
     let fx = seeder::provision(base_url()).expect("provision");
     let src = fx.account("test1").expect("test1");
     let tgt = fx.account("test4").expect("test4");
@@ -957,7 +986,7 @@ fn export_emails_in_multiple_import_batches() {
     );
 
     let mut small = Map::new();
-    small.insert("setMaxObjects".to_owned(), json!(2));
+    small.insert("maxSetObjects".to_owned(), json!(2));
     let _guard = JmapSettingsGuard::override_settings(small);
 
     let probe = HttpClient::new(basic("test4"), RetryPolicy::new(5), true);
@@ -965,7 +994,7 @@ fn export_emails_in_multiple_import_batches() {
     let limits = session.core_limits().expect("core limits");
     assert_eq!(
         limits.max_objects_in_set, 2,
-        "setMaxObjects override is advertised"
+        "maxSetObjects override is advertised"
     );
 
     let e1 = sync::export::run(
