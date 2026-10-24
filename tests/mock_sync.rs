@@ -1346,8 +1346,9 @@ fn import_unusable_received_at_falls_back_instead_of_dropping_the_email() {
     let _ = std::fs::remove_file(&archive);
 }
 
+// Draft -18 FileNodes import by @type; an unrecognised @type fails only that node.
 #[test]
-fn import_file_node_without_node_type_is_inferred_not_skipped() {
+fn import_file_node_by_type_and_skips_unknown_type() {
     let mut server = mockito::Server::new();
     let base = server.url();
     let api = "/jmap/api";
@@ -1366,7 +1367,7 @@ fn import_file_node_without_node_type_is_inferred_not_skipped() {
         .match_body(Matcher::Regex("FileNode/query".into()))
         .with_body(
             json!({"methodResponses":[["FileNode/query",
-                {"accountId":"w","ids":["F1","F2"]},"q"]]})
+                {"accountId":"w","ids":["F1","F2","F3","F4"]},"q"]]})
             .to_string(),
         )
         .create();
@@ -1375,8 +1376,15 @@ fn import_file_node_without_node_type_is_inferred_not_skipped() {
         .match_body(Matcher::Regex("FileNode/get".into()))
         .with_body(
             json!({"methodResponses":[["FileNode/get",{"accountId":"w","state":"sf1","list":[
-                {"id":"F1","parentId":null,"name":"docs","created":"2026-01-01T00:00:00Z"},
-                {"id":"F2","parentId":"F1","name":"a.txt","blobId":"BLBF","type":"text/plain","created":"2026-01-02T00:00:00Z"}
+                {"@type":"Directory","id":"F1","parentId":null,"name":"docs","role":null,
+                 "isSubscribed":true,"created":"2026-01-01T00:00:00Z"},
+                {"@type":"File","id":"F2","parentId":"F1","name":"a.sh","blobId":"BLBF",
+                 "size":10,"mediaType":"text/x-sh","executable":true,
+                 "created":"2026-01-02T00:00:00Z"},
+                {"@type":"SymLink","id":"F3","parentId":null,"name":"latest",
+                 "target":["docs","a.sh"],"created":"2026-01-03T00:00:00Z"},
+                {"@type":"Socket","id":"F4","parentId":null,"name":"sock",
+                 "created":"2026-01-04T00:00:00Z"}
             ],"notFound":[]},"g"]]})
             .to_string(),
         )
@@ -1386,30 +1394,33 @@ fn import_file_node_without_node_type_is_inferred_not_skipped() {
         .with_body("file bytes")
         .create();
 
-    let summary = sync::import_jmap::run(
+    let outcome = sync::import_jmap::run_reporting(
         common(&archive),
         import_cfg_objects(&base, vec![ObjectType::FileNode]),
-    )
-    .expect("import does not abort when nodeType is absent");
+    );
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
 
-    let nodes = summary
+    let nodes = outcome
+        .summary
         .per_type
         .iter()
         .find(|(t, _)| *t == "FileNode")
         .map(|(_, c)| c.clone())
         .expect("file node counts");
-    assert_eq!(
-        nodes.fetched, 2,
-        "a server that omits nodeType still imports"
-    );
-    assert_eq!(nodes.failed, 0);
+    assert_eq!(nodes.fetched, 3);
+    assert_eq!(nodes.failed, 1);
 
     let conn = rusqlite::Connection::open(&archive).unwrap();
     let mut stmt = conn
-        .prepare("SELECT name, node_type FROM file_nodes ORDER BY name")
+        .prepare(
+            "SELECT name, node_type, media_type, executable, target FROM file_nodes ORDER BY name",
+        )
         .unwrap();
-    let rows: Vec<(String, String)> = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+    type Row = (String, String, Option<String>, i64, Option<String>);
+    let rows: Vec<Row> = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
         .unwrap()
         .map(Result::unwrap)
         .collect();
@@ -1417,10 +1428,22 @@ fn import_file_node_without_node_type_is_inferred_not_skipped() {
     assert_eq!(
         rows,
         vec![
-            ("a.txt".to_owned(), "file".to_owned()),
-            ("docs".to_owned(), "directory".to_owned()),
-        ],
-        "nodeType is inferred from the presence of a blobId"
+            (
+                "a.sh".to_owned(),
+                "file".to_owned(),
+                Some("text/x-sh".to_owned()),
+                1,
+                None
+            ),
+            ("docs".to_owned(), "directory".to_owned(), None, 0, None),
+            (
+                "latest".to_owned(),
+                "symlink".to_owned(),
+                None,
+                0,
+                Some(r#"["docs","a.sh"]"#.to_owned())
+            ),
+        ]
     );
     let _ = std::fs::remove_file(&archive);
 }

@@ -295,8 +295,8 @@ fn seed_deep_filenode_chain(jmap: &seeder::jmap::Jmap, account_id: &str, depth: 
             serde_json::Value::String(format!("dir-{i}")),
         );
         obj.insert(
-            "nodeType".to_owned(),
-            serde_json::Value::String("directory".to_owned()),
+            "@type".to_owned(),
+            serde_json::Value::String("Directory".to_owned()),
         );
         if i > 0 {
             obj.insert(

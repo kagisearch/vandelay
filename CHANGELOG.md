@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file. This projec
 - WebDAV, CalDAV, CardDAV: `--replace-source` removes other recorded sources of the same kind, and the items imported from them, before importing, so a moved share leaves a single tree in the archive.
 
 ### Changed
+- JMAP: `FileNode` now follows `draft-ietf-jmap-filenode-18`: nodes are typed by `@type` (`File`, `Directory`, `SymLink`), the media type is read from and written to `mediaType`, and each node carries only the properties its type defines. Servers that implement a draft older than -15 (`nodeType`, `type`) are no longer supported.
+- JMAP: the `executable` flag of a file is now imported and exported (existing archives gain the column on open).
 
 ### Fixed
 - MS Exchange EWS: `--auth-bearer` without an inline value required `--ews-client-id` even when the token was set in `VANDELAY_TOKEN`

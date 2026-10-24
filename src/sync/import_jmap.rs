@@ -31,7 +31,7 @@ use crate::jmap::session::{Limits, Session};
 use crate::jmap::wire::JmapId;
 use crate::jmap::wire::common::parse_utc_date;
 use crate::jmap::wire::email::Email;
-use crate::jmap::wire::file_node::{FileNode, NodeType};
+use crate::jmap::wire::file_node::{FileNode, FileProps, NodeKind};
 use crate::jmap::wire::sieve_script::SieveScript;
 use crate::logging::{LEVEL_DEFAULT, LEVEL_PROGRESS, Logger};
 use crate::sync::emailmeta::email_meta_from_blob;
@@ -68,12 +68,13 @@ fn get_props(ty: ObjectType) -> Option<&'static [&'static str]> {
         ObjectType::Email => Some(&["blobId", "receivedAt", "mailboxIds", "keywords"]),
         ObjectType::SieveScript => Some(&["name", "isActive", "blobId"]),
         ObjectType::FileNode => Some(&[
+            "@type",
             "parentId",
-            "nodeType",
             "blobId",
             "target",
             "name",
-            "type",
+            "mediaType",
+            "executable",
             "created",
             "modified",
             "isSubscribed",
@@ -550,7 +551,7 @@ fn blob_references<'a>(ty: ObjectType, objects: impl Iterator<Item = &'a Value>)
                     && seen.insert(b.to_owned())
                 {
                     let mt = o
-                        .get("type")
+                        .get("mediaType")
                         .and_then(Value::as_str)
                         .unwrap_or("application/octet-stream")
                         .to_owned();
@@ -737,8 +738,10 @@ fn insert_one(
         }
         ObjectType::FileNode => {
             let w: FileNode = serde_json::from_value(obj.clone())?;
-            let blob_local = match (w.effective_node_type(), &w.blob_id) {
-                (NodeType::File, Some(b)) => Some(blobs.get(&b.0, "file")?.local_id),
+            let blob_local = match &w.kind {
+                NodeKind::File(FileProps {
+                    blob_id: Some(b), ..
+                }) => Some(blobs.get(&b.0, "file")?.local_id),
                 _ => None,
             };
             mapping::insert_file_node(conn, &w, blob_local, &resolver)
@@ -970,8 +973,10 @@ fn update_one(
         }
         ObjectType::FileNode => {
             let w: FileNode = serde_json::from_value(obj.clone())?;
-            let blob_local = match (w.effective_node_type(), &w.blob_id) {
-                (NodeType::File, Some(b)) => Some(blobs.get(&b.0, "file")?.local_id),
+            let blob_local = match &w.kind {
+                NodeKind::File(FileProps {
+                    blob_id: Some(b), ..
+                }) => Some(blobs.get(&b.0, "file")?.local_id),
                 _ => None,
             };
             mapping::update_file_node(conn, local_id, &w, blob_local, &resolver)

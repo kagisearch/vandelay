@@ -448,7 +448,7 @@ fn graph_import_survives_a_full_export_to_stalwart() {
     assert!(
         files
             .iter()
-            .any(|f| f["name"] == "report.txt" && f["blobId"].is_string()),
+            .any(|f| f["name"] == "report.txt" && f["@type"] == "File" && f["blobId"].is_string()),
         "the drive file reached the target with a blob"
     );
     assert!(

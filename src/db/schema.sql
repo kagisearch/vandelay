@@ -235,6 +235,7 @@ CREATE TABLE IF NOT EXISTS file_nodes (
     modified       TEXT,
     is_subscribed  INTEGER NOT NULL DEFAULT 1,
     role           TEXT,
+    executable     INTEGER NOT NULL DEFAULT 0,
     UNIQUE (parent_id, name)
 );
 
