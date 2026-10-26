@@ -242,6 +242,7 @@ fn export_cfg(localpart: &str, account_id: &str, prune: bool) -> ExportConfig {
         objects: None,
         prune,
         yes: true,
+        upload_buffer: vandelay::sync::DEFAULT_UPLOAD_BUFFER,
     }
 }
 

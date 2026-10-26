@@ -361,6 +361,7 @@ fn graph_import_survives_a_full_export_to_stalwart() {
             objects: None,
             prune: false,
             yes: true,
+            upload_buffer: vandelay::sync::DEFAULT_UPLOAD_BUFFER,
         },
     )
     .expect("export");

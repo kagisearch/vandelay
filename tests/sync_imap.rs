@@ -383,6 +383,7 @@ fn imap_imported_archive_exports_via_jmap() {
         objects: None,
         prune: false,
         yes: false,
+        upload_buffer: vandelay::sync::DEFAULT_UPLOAD_BUFFER,
     };
     let first = sync::export::run(export_common, export_cfg).expect("first export");
     assert!(!first.any_failed(), "first export had failures: {first:?}");
@@ -407,6 +408,7 @@ fn imap_imported_archive_exports_via_jmap() {
         objects: None,
         prune: false,
         yes: false,
+        upload_buffer: vandelay::sync::DEFAULT_UPLOAD_BUFFER,
     };
     let second = sync::export::run(export_common2, export_cfg2).expect("second export");
     for (name, counts) in &second.per_type {
@@ -501,6 +503,7 @@ fn dovecot_noselect_parents_keep_the_tree_through_export() {
             objects: None,
             prune: false,
             yes: true,
+            upload_buffer: vandelay::sync::DEFAULT_UPLOAD_BUFFER,
         },
     )
     .expect("export");

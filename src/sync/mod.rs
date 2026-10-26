@@ -64,11 +64,16 @@ pub struct ImportConfig {
     pub allow_source_change: bool,
 }
 
+/// Default for [`ExportConfig::upload_buffer`].
+pub const DEFAULT_UPLOAD_BUFFER: u64 = 256 * 1024 * 1024;
+
 pub struct ExportConfig {
     pub connect: ConnectConfig,
     pub objects: Option<Vec<ObjectType>>,
     pub prune: bool,
     pub yes: bool,
+    /// Bytes of message data read ahead of the parallel uploads.
+    pub upload_buffer: u64,
 }
 
 #[derive(Debug, Default, Clone)]

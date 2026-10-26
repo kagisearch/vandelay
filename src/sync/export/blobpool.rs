@@ -14,7 +14,6 @@ use crate::sync::import_jmap::mapping::BlobBytes;
 use crate::sync::import_jmap::pool::{Pool, effective_workers};
 
 pub const MAX_INFLIGHT_BLOBS: usize = 64;
-pub const MAX_INFLIGHT_BYTES: u64 = 256 * 1024 * 1024;
 
 type UploadJob = (i64, Vec<u8>);
 type UploadDone = (i64, u64, Result<JmapId, JmapError>);
@@ -59,6 +58,7 @@ impl Budget {
 
 pub struct UploadPool {
     pool: Pool<UploadJob, UploadDone>,
+    max_bytes: u64,
 }
 
 impl UploadPool {
@@ -76,12 +76,15 @@ impl UploadPool {
             );
             (local_id, len, res)
         });
-        UploadPool { pool }
+        UploadPool {
+            pool,
+            max_bytes: net.upload_buffer,
+        }
     }
 
     pub fn upload(&self, uploader: &mut Uploader<'_>, blobs: &[i64]) -> HashMap<i64, JmapError> {
         let mut failed = HashMap::new();
-        let mut budget = Budget::new(MAX_INFLIGHT_BLOBS, MAX_INFLIGHT_BYTES);
+        let mut budget = Budget::new(MAX_INFLIGHT_BLOBS, self.max_bytes);
         for &local_id in blobs {
             if uploader.cached(local_id).is_some() {
                 continue;
@@ -128,7 +131,7 @@ impl UploadPool {
                 true
             }
             Err(_) => {
-                *budget = Budget::new(MAX_INFLIGHT_BLOBS, MAX_INFLIGHT_BYTES);
+                *budget = Budget::new(MAX_INFLIGHT_BLOBS, self.max_bytes);
                 false
             }
         }
