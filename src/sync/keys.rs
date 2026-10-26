@@ -130,6 +130,25 @@ pub fn email_key(idx: &EmailIndex) -> EmailKey {
     }
 }
 
+/// A compact stand-in for an [`EmailKey`] in large sets: 128 bits of a BLAKE3
+/// hash, domain-separated so a Message-ID key and a fallback key never meet.
+pub fn email_key_hash(key: &EmailKey) -> [u8; 16] {
+    let mut hasher = blake3::Hasher::new();
+    match key {
+        EmailKey::MessageId(mids) => {
+            hasher.update(b"m\x1f");
+            hasher.update(mids.as_bytes());
+        }
+        EmailKey::Fallback(fb) => {
+            hasher.update(b"f\x1f");
+            hasher.update(fb);
+        }
+    }
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+    out
+}
+
 pub fn email_keys(indices: &[EmailIndex]) -> Vec<EmailKey> {
     indices.iter().map(email_key).collect()
 }
@@ -137,6 +156,24 @@ pub fn email_keys(indices: &[EmailIndex]) -> Vec<EmailKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Equal keys hash equal; a Message-ID key and a fallback key built from the
+    // same bytes do not.
+    #[test]
+    fn email_key_hash_is_stable_and_domain_separated() {
+        let mid = EmailKey::MessageId("a@x".to_owned());
+        assert_eq!(email_key_hash(&mid), email_key_hash(&mid.clone()));
+        assert_ne!(
+            email_key_hash(&mid),
+            email_key_hash(&EmailKey::MessageId("b@x".to_owned()))
+        );
+        let mut fb = [0u8; 32];
+        fb[..3].copy_from_slice(b"a@x");
+        assert_ne!(
+            email_key_hash(&mid),
+            email_key_hash(&EmailKey::Fallback(fb))
+        );
+    }
 
     #[test]
     fn message_id_normalization_strips_brackets_and_lowercases() {
