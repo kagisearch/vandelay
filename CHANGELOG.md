@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file. This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.0.13-kagi.2] - 2026-10-26
+
+Fork release: upstream 1.0.13 plus the changes below. Released as the
+`x86_64-unknown-linux-musl` binary only.
+
+### Added
+- Export: `--upload-buffer <MiB>` bounds the message data read ahead of the parallel uploads (default 256 MiB, as before).
+
+### Fixed
+- Export: email duplicates were checked by loading every email in the target account and every message in the archive into memory first, so memory grew with both; the account's emails are now kept as key hashes, read page by page, and the archive is read in pages.
+
 ## [1.0.13] - 2026-10-25
 
 ### Added
