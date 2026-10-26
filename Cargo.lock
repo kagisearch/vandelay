@@ -2938,7 +2938,7 @@ dependencies = [
 
 [[package]]
 name = "vandelay"
-version = "1.0.15"
+version = "1.0.15-kagi.1"
 dependencies = [
  "blake3",
  "calcard",
