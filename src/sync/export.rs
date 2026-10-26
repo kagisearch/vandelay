@@ -140,6 +140,7 @@ struct Net {
     session: Session,
     dry_run: bool,
     threads: usize,
+    upload_buffer: u64,
 }
 
 fn has_rows(conn: &Connection, ty: ObjectType) -> bool {
@@ -164,6 +165,7 @@ pub fn run(common: CommonConfig, config: ExportConfig) -> Result<Summary, Error>
         session: connected.session.clone(),
         dry_run: ctx.dry_run(),
         threads: ctx.common.threads,
+        upload_buffer: config.upload_buffer,
     };
 
     let work = work_list(&ctx.conn, &config, &connected, &logger);
