@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file. This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- CalDAV, Google Takeout: an edited day of an all-day series (`RECURRENCE-ID` given as a date, or as a zoned midnight as Exchange writes it) was imported as a separate event with the same UID, so the series or the edit was lost; calcard now comes from the Stalwart repository (v1.0.2), which keeps the edit as a recurrence override. Needs a Stalwart that ships the same calcard (1.0.2 or later) to read the series back.
+
 ## [1.0.14-kagi.1] - 2026-11-02
 
 Fork release: upstream 1.0.14 plus the changes below. Released as the
