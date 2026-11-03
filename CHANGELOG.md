@@ -12,6 +12,7 @@ Fork release: upstream 1.0.15 plus the changes below. Released as the
 
 ### Fixed
 - Export: email duplicates were checked by loading every email in the target account and every message in the archive into memory first, so memory grew with both; the account's emails are now kept as key hashes, read page by page, and the archive is read in pages.
+- CalDAV, Google Takeout: an edited day of an all-day series (`RECURRENCE-ID` given as a date, or as a zoned midnight as Exchange writes it) was imported as a separate event with the same UID, so the series or the edit was lost; calcard now comes from the Stalwart repository (v1.0.3), which keeps the edit as a recurrence override. Needs a Stalwart that ships the same calcard (1.0.2 or later) to read the series back.
 
 ## [1.0.15] - 2026-11-08
 

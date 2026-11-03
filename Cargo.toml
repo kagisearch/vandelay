@@ -38,13 +38,15 @@ crossbeam-channel = "0.5.15"
 num_cpus = "1.17.0"
 encodify = "1.0"
 mail-parser = "0.11.3"
-calcard = "0.3"
+# calcard moved into the Stalwart repository and is no longer published to
+# crates.io; 1.0.2 keeps an all-day series and its edited instances together.
+calcard = { git = "https://github.com/stalwartlabs/stalwart", tag = "v1.0.3" }
 rustls = { version = "0.23.40", default-features = false, features = ["aws-lc-rs", "std", "tls12", "logging"] }
 rustls-platform-verifier = "0.7"
 regex  = "1.13"
 flate2 = "1.1.9"
 quick-xml = "0.42"
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 chrono-tz = { version = "0.10", default-features = false }
 hashify = "0.2"
 psl = "2.1.226"
