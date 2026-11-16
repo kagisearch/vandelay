@@ -395,6 +395,42 @@ END:VCALENDAR\r\n";
     }
 
     #[test]
+    fn all_day_series_keeps_its_edited_instance_as_an_override() {
+        let ical = "BEGIN:VCALENDAR\r\n\
+VERSION:2.0\r\n\
+PRODID:-//Test//EN\r\n\
+BEGIN:VEVENT\r\n\
+UID:all-day@example.com\r\n\
+DTSTAMP:20261001T000000Z\r\n\
+DTSTART;VALUE=DATE:20261005\r\n\
+DTEND;VALUE=DATE:20261006\r\n\
+RRULE:FREQ=WEEKLY;COUNT=5\r\n\
+SUMMARY:Weekly\r\n\
+END:VEVENT\r\n\
+BEGIN:VEVENT\r\n\
+UID:all-day@example.com\r\n\
+DTSTAMP:20261001T000000Z\r\n\
+RECURRENCE-ID;VALUE=DATE:20261012\r\n\
+DTSTART;VALUE=DATE:20261013\r\n\
+DTEND;VALUE=DATE:20261014\r\n\
+SUMMARY:Weekly (moved)\r\n\
+END:VEVENT\r\n\
+END:VCALENDAR\r\n";
+        let entries = JsCalendarEntry::parse_all(ical).expect("parse");
+        assert_eq!(
+            entries.len(),
+            1,
+            "the edited instance stays inside its series"
+        );
+        let overrides = entries[0].data["recurrenceOverrides"]
+            .as_object()
+            .expect("recurrenceOverrides");
+        let moved = &overrides["2026-10-12T00:00:00"];
+        assert_eq!(moved["start"], "2026-10-13T00:00:00");
+        assert_eq!(moved["title"], "Weekly (moved)");
+    }
+
+    #[test]
     fn strip_extracted_fields_pulls_isdraft_use_default_alerts() {
         let data = serde_json::json!({
             "@type": "Event",
