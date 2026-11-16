@@ -179,9 +179,43 @@ impl EmailIndex {
     }
 }
 
+impl EmailKey {
+    /// A compact stand-in for the key in large sets: 128 bits of a BLAKE3
+    /// hash, domain-separated so a Message-ID key and a fallback key never
+    /// meet.
+    pub fn hash(&self) -> [u8; 16] {
+        let mut hasher = blake3::Hasher::new();
+        match self {
+            EmailKey::MessageId(mids) => {
+                hasher.update(b"m\x1f");
+                hasher.update(mids.as_bytes());
+            }
+            EmailKey::Fallback(fb) => {
+                hasher.update(b"f\x1f");
+                hasher.update(&fb.0);
+            }
+        }
+        let mut out = [0u8; 16];
+        out.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Equal keys hash equal; a Message-ID key and a fallback key built from the
+    // same bytes do not.
+    #[test]
+    fn email_key_hash_is_stable_and_domain_separated() {
+        let mid = EmailKey::MessageId("a@x".to_owned());
+        assert_eq!(mid.hash(), mid.clone().hash());
+        assert_ne!(mid.hash(), EmailKey::MessageId("b@x".to_owned()).hash());
+        let mut fb = [0u8; 32];
+        fb[..3].copy_from_slice(b"a@x");
+        assert_ne!(mid.hash(), EmailKey::Fallback(Key32(fb)).hash());
+    }
 
     // address_list matches the old lowercase-and-join, empty entries included
     #[test]

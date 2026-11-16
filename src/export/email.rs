@@ -17,7 +17,7 @@ use super::blobpool::UploadPool;
 use super::target::{ClientId, Maps, TargetJson};
 use super::uploader::Uploader;
 use super::{Exporter, Plan};
-use crate::archive::{BlobId, LocalId};
+use crate::archive::{BlobId, LocalId, Store};
 use crate::console::ByteSize;
 use crate::error::Error;
 use crate::jmap::error::JmapError;
@@ -71,19 +71,6 @@ impl Exporter<'_> {
         counts: &mut TypeCounts,
     ) -> Result<Plan, Error> {
         let target_keys = self.email_target_keys()?;
-        let locals = self.email_locals()?;
-        let unmatched: Vec<&(LocalId, EmailRow)> = locals
-            .iter()
-            .filter(|(_, row)| {
-                let matched =
-                    target_keys.contains(&EmailIndex::from_json(&row.message_match).key());
-                if matched {
-                    counts.skipped += 1;
-                }
-                !matched
-            })
-            .collect();
-
         let mut batch = EmailBatch {
             exporter: self,
             uploader: Uploader::new(self),
@@ -93,61 +80,110 @@ impl Exporter<'_> {
             target_keys: &target_keys,
             size: EmailBatch::initial_size(self.account.limits()),
         };
-        let mut rest = unmatched.as_slice();
-        while !rest.is_empty() {
-            let (chunk, tail) = rest.split_at(batch.size.min(rest.len()));
-            batch.export_chunk(chunk)?;
-            rest = tail;
+        let mut after = None;
+        // Whole import batches per page, so a page does not end in a short
+        // batch.
+        let page_rows = |size: usize| size * (EMAIL_LOCAL_PAGE / size).max(1);
+        while let Some(page) = email_local_page(self.store, after, page_rows(batch.size))? {
+            after = page.last().map(|(id, _)| *id);
+            let mut unmatched: Vec<&(LocalId, EmailRow)> = Vec::with_capacity(page.len());
+            for entry in &page {
+                let key = EmailIndex::from_json(&entry.1.message_match).key();
+                if target_keys.contains(&key.hash()) {
+                    batch.counts.skipped += 1;
+                } else {
+                    unmatched.push(entry);
+                }
+            }
+            let mut rest = unmatched.as_slice();
+            while !rest.is_empty() {
+                let (chunk, tail) = rest.split_at(batch.size.min(rest.len()));
+                batch.export_chunk(chunk)?;
+                rest = tail;
+            }
         }
         Ok(Plan::default())
     }
 
-    fn email_target_keys(&self) -> Result<HashSet<EmailKey>, Error> {
+    /// The account's emails as hashes of their dedup keys. Fetched one
+    /// `Email/get` page at a time and reduced to 16 bytes each, so memory
+    /// stays small for large accounts. Emails without a Message-ID are
+    /// fetched again with the fallback fields, page by page.
+    fn email_target_keys(&self) -> Result<HashSet<[u8; 16]>, Error> {
         let ty = ObjectType::Email;
-        let targets = self.query_get(ty, Some(&["messageId"]))?;
-        let mut indices: Vec<EmailIndex> = targets.iter().map(EmailIndex::from_target).collect();
-        let fallback_ids: Vec<JmapId> = targets
-            .iter()
-            .zip(&indices)
-            .filter(|(_, i)| i.mids.is_empty())
-            .filter_map(|(v, _)| TargetJson(v).id().map(|id| JmapId(id.to_owned())))
-            .collect();
-        if !fallback_ids.is_empty() {
-            let got = self.account.get::<Value>(
+        let ids = self.account.query_all_ids(ty.jmap_name())?;
+        let mut keys = HashSet::with_capacity(ids.len());
+        let page =
+            usize::try_from(self.account.limits().max_objects_in_get.max(1)).unwrap_or(usize::MAX);
+        for chunk in ids.chunks(page) {
+            let got = self
+                .account
+                .get::<Value>(ty.jmap_name(), chunk, Some(&["messageId"]))?;
+            let mut fallback: HashMap<String, [u8; 16]> = HashMap::new();
+            for v in &got.list {
+                let key = EmailIndex::from_target(v).key();
+                match (&key, TargetJson(v).id()) {
+                    (EmailKey::Fallback(_), Some(id)) => {
+                        fallback.insert(id.to_owned(), key.hash());
+                    }
+                    _ => {
+                        keys.insert(key.hash());
+                    }
+                }
+            }
+            if fallback.is_empty() {
+                continue;
+            }
+            let fallback_ids: Vec<JmapId> = fallback.keys().cloned().map(JmapId).collect();
+            let full = self.account.get::<Value>(
                 ty.jmap_name(),
                 &fallback_ids,
                 Some(&EMAIL_KEY_PROPERTIES),
             )?;
-            let by_id: HashMap<&str, &Value> = got
-                .list
-                .iter()
-                .filter_map(|v| TargetJson(v).id().map(|i| (i, v)))
-                .collect();
-            for (v, slot) in targets.iter().zip(indices.iter_mut()) {
-                if let Some(full) = TargetJson(v).id().and_then(|i| by_id.get(i)) {
-                    *slot = EmailIndex::from_target(full);
+            for v in &full.list {
+                if let Some(id) = TargetJson(v).id() {
+                    fallback.remove(id);
                 }
+                keys.insert(EmailIndex::from_target(v).key().hash());
             }
+            // An email gone between the two reads keeps the key its first
+            // read gave.
+            keys.extend(fallback.into_values());
         }
-        Ok(indices.iter().map(EmailIndex::key).collect())
+        Ok(keys)
     }
+}
 
-    fn email_locals(&self) -> Result<Vec<(LocalId, EmailRow)>, Error> {
-        let mut stmt = self
-            .store
-            .connection()
-            .prepare(EmailRow::SELECT)
-            .map_err(Error::partial)?;
-        let rows = stmt
-            .query_map([], |row| Ok((row.get(0)?, EmailRow::from_row(row))))
-            .map_err(Error::partial)?;
-        let rows: Vec<_> = rows.collect::<Result<_, _>>().map_err(Error::partial)?;
-        let mut out = Vec::with_capacity(rows.len());
-        for (id, email) in rows {
-            out.push((id, email?));
-        }
-        Ok(out)
+/// About how many archive rows are read per page (rounded to whole import
+/// batches), so the export holds one page of rows rather than the whole
+/// archive.
+const EMAIL_LOCAL_PAGE: usize = 1024;
+
+/// The archive's emails after `after` (by id), at most `limit` of them; None
+/// once there are no more.
+fn email_local_page(
+    store: Store<'_>,
+    after: Option<LocalId>,
+    limit: usize,
+) -> Result<Option<Vec<(LocalId, EmailRow)>>, Error> {
+    let sql = format!("{} WHERE id > ?1 ORDER BY id LIMIT ?2", EmailRow::SELECT);
+    let mut stmt = store
+        .connection()
+        .prepare_cached(&sql)
+        .map_err(Error::partial)?;
+    let after = after.map_or(i64::MIN, LocalId::get);
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let rows = stmt
+        .query_map(rusqlite::params![after, limit], |row| {
+            Ok((row.get(0)?, EmailRow::from_row(row)))
+        })
+        .map_err(Error::partial)?;
+    let rows: Vec<_> = rows.collect::<Result<_, _>>().map_err(Error::partial)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, email) in rows {
+        out.push((id, email?));
     }
+    Ok((!out.is_empty()).then_some(out))
 }
 
 struct Pending<'r> {
@@ -217,7 +253,7 @@ struct EmailBatch<'e, 'a> {
     pool: Option<UploadPool>,
     maps: &'e Maps,
     counts: &'e mut TypeCounts,
-    target_keys: &'e HashSet<EmailKey>,
+    target_keys: &'e HashSet<[u8; 16]>,
     size: usize,
 }
 
@@ -463,7 +499,7 @@ impl<'r> EmailBatch<'_, '_> {
                         .iter()
                         .filter(|(_, email)| {
                             self.target_keys
-                                .contains(&EmailIndex::from_target(email).key())
+                                .contains(&EmailIndex::from_target(email).key().hash())
                         })
                         .map(|(blob, _)| blob.clone()),
                 );
@@ -497,6 +533,39 @@ impl<'r> EmailBatch<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Pages walk the archive in id order, each row once, and end with None.
+    #[test]
+    fn email_local_page_walks_the_archive_in_id_order() {
+        let archive = crate::archive::Archive::open_in_memory().unwrap();
+        let store = archive.store();
+        for i in 0..5 {
+            let blob = store.blobs().intern(format!("m{i}").as_bytes()).unwrap();
+            archive
+                .connection()
+                .execute(
+                    "INSERT INTO emails (blob_id,received_at,mailbox_ids,keywords,message_match)
+                     VALUES (?1,'2020-01-01T00:00:00Z','[]','[]','{}')",
+                    rusqlite::params![blob],
+                )
+                .unwrap();
+        }
+        let mut seen = Vec::new();
+        let mut after = None;
+        let mut pages = 0;
+        while let Some(page) = email_local_page(store, after, 2).unwrap() {
+            assert!(page.len() <= 2);
+            after = page.last().map(|(id, _)| *id);
+            seen.extend(page.into_iter().map(|(id, _)| id));
+            pages += 1;
+        }
+        assert_eq!(pages, 3);
+        let mut sorted = seen.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(seen, sorted);
+        assert_eq!(seen.len(), 5);
+    }
 
     fn limits(set: u64) -> Limits {
         Limits {
