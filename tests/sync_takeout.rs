@@ -34,6 +34,7 @@ fn config_for(root: PathBuf) -> TakeoutImport {
         takeout_root: root,
         source_change: SourceChange::Reject,
         automap: Automap::Enabled,
+        starred_mailbox: None,
     }
 }
 
@@ -888,4 +889,43 @@ fn noautomap_leaves_nested_mailboxes_role_null() {
     assert!(names.contains("Inbox"));
     assert!(names.contains("Project"));
     assert!(names.contains("2026-Q1"));
+}
+
+#[test]
+fn starred_mailbox_files_stars_as_a_mailbox() {
+    let td = TempDir::new().unwrap();
+    SyntheticTakeout::build(td.path());
+    let archive = td.path().join("a.sqlite");
+    TakeoutImport {
+        starred_mailbox: Some("Starred".to_owned()),
+        ..config_for(td.path().to_path_buf())
+    }
+    .run(common_for(&archive))
+    .into_result()
+    .unwrap();
+
+    let conn = Connection::open(&archive).unwrap();
+    let flagged: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM emails WHERE keywords LIKE '%$flagged%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(flagged, 0, "no star is kept as a flag");
+    // The starred message keeps its Inbox and gains the Starred mailbox.
+    let mut placed: Vec<String> = conn
+        .prepare(
+            "SELECT m.name FROM emails e, json_each(e.mailbox_ids) j
+             JOIN mailboxes m ON m.id = j.value
+             WHERE e.id IN (SELECT e2.id FROM emails e2, json_each(e2.mailbox_ids) j2
+                            JOIN mailboxes m2 ON m2.id = j2.value WHERE m2.name = 'Starred')",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    placed.sort();
+    assert_eq!(placed, ["Inbox", "Starred"]);
 }

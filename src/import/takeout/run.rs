@@ -51,6 +51,7 @@ struct Counts {
 struct TakeoutRun {
     run: ImportRun,
     automap: Automap,
+    starred_mailbox: Option<String>,
     counts: Counts,
 }
 
@@ -70,6 +71,7 @@ impl TakeoutImport {
             takeout_root,
             source_change,
             automap,
+            starred_mailbox,
         } = self;
         let canonical = match TakeoutImport::scan_root(&takeout_root) {
             Ok(canonical) => canonical,
@@ -117,6 +119,7 @@ impl TakeoutImport {
         let mut takeout = TakeoutRun {
             run,
             automap,
+            starred_mailbox,
             counts: Counts::default(),
         };
         let result = takeout.execute(&walk);
@@ -224,6 +227,7 @@ impl TakeoutRun {
             ids: store.takeout_ids(source),
             automap,
             fallback,
+            starred_mailbox: self.starred_mailbox.as_deref(),
             mailboxes,
             mailbox_counts: &mut self.counts.mailbox,
             email_counts: &mut self.counts.email,

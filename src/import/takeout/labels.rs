@@ -147,6 +147,16 @@ impl SystemLabel {
 }
 
 impl LabelClassification {
+    /// Files a starred message under `mailbox` instead of keeping the
+    /// `$flagged` keyword, for targets where a flag means something other
+    /// than a star (pinned to the top of a list, say). The mailbox is added to
+    /// the message's other mailboxes, so call it once they are final.
+    pub fn file_starred_under(&mut self, mailbox: &str) {
+        if self.keywords.remove("$flagged") && !self.mailboxes.iter().any(|m| m == mailbox) {
+            self.mailboxes.push(mailbox.to_owned());
+        }
+    }
+
     pub fn classify(tokens: &[String]) -> LabelClassification {
         let mut mailboxes: Vec<String> = Vec::new();
         let mut keywords = Keywords::new();
@@ -276,6 +286,22 @@ mod tests {
         }
         let c = classify_str("Archived");
         assert_eq!(c.mailboxes, vec!["Archive".to_owned()]);
+    }
+
+    #[test]
+    fn file_starred_under_moves_the_star_to_a_mailbox() {
+        let mut c = classify_str("Inbox,Starred,Opened");
+        c.file_starred_under("Starred");
+        assert_eq!(c.mailboxes, ["Inbox", "Starred"]);
+        assert!(!c.keywords.contains("$flagged"));
+        assert!(c.keywords.contains("$seen"));
+    }
+
+    #[test]
+    fn file_starred_under_leaves_unstarred_mail_alone() {
+        let mut c = classify_str("Inbox,Opened");
+        c.file_starred_under("Starred");
+        assert_eq!(c.mailboxes, ["Inbox"]);
     }
 
     #[test]

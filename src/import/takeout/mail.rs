@@ -31,6 +31,8 @@ pub struct MailWriter<'a> {
     pub ids: TakeoutIds<'a>,
     pub automap: Automap,
     pub fallback: &'a str,
+    /// Where starred messages are filed instead of getting `$flagged`.
+    pub starred_mailbox: Option<&'a str>,
     pub mailboxes: &'a mut HashMap<String, LocalId>,
     pub mailbox_counts: &'a mut TypeCounts,
     pub email_counts: &'a mut TypeCounts,
@@ -105,6 +107,9 @@ impl MailWriter<'_> {
                 ));
             }
             classification.mailboxes.push(fallback.to_owned());
+        }
+        if let Some(starred) = self.starred_mailbox {
+            classification.file_starred_under(starred);
         }
         if classification.opened_won_over_unread {
             self.logger.warn(format_args!(
@@ -210,6 +215,7 @@ mod tests {
             ids: store.takeout_ids(source),
             automap,
             fallback: "",
+            starred_mailbox: None,
             mailboxes: &mut mailboxes,
             mailbox_counts: &mut mailbox_counts,
             email_counts: &mut email_counts,

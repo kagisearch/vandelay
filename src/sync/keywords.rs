@@ -59,6 +59,13 @@ impl Keywords {
         fresh
     }
 
+    /// Removes `keyword`, reporting whether it was there.
+    pub fn remove(&mut self, keyword: &str) -> bool {
+        let before = self.0.len();
+        self.0.retain(|k| !k.eq_ignore_ascii_case(keyword));
+        self.0.len() != before
+    }
+
     pub fn push_system(&mut self, keyword: SystemKeyword) {
         self.push(keyword.as_str());
     }

@@ -38,6 +38,13 @@ pub struct TakeoutImportArgs {
     )]
     allow_source_change: bool,
 
+    #[arg(
+        long,
+        value_name = "NAME",
+        help = "File starred messages under this mailbox instead of flagging them"
+    )]
+    starred_mailbox: Option<String>,
+
     #[command(flatten)]
     global: GlobalArgs,
 }
@@ -59,6 +66,7 @@ impl TakeoutImportArgs {
                 } else {
                     Automap::Enabled
                 },
+                starred_mailbox: self.starred_mailbox,
             },
         ))
     }

@@ -22,4 +22,6 @@ pub struct TakeoutImport {
     pub takeout_root: PathBuf,
     pub source_change: SourceChange,
     pub automap: Automap,
+    /// Files starred messages under this mailbox instead of `$flagged`.
+    pub starred_mailbox: Option<String>,
 }
