@@ -380,6 +380,7 @@ fn imap_imported_archive_exports_via_jmap() {
         objects: None,
         prune: Prune::Keep,
         confirm: Confirm::Prompt,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     };
     let first = export_cfg
         .run(export_common)
@@ -407,6 +408,7 @@ fn imap_imported_archive_exports_via_jmap() {
         objects: None,
         prune: Prune::Keep,
         confirm: Confirm::Prompt,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     };
     let second = export_cfg2
         .run(export_common2)
@@ -502,6 +504,7 @@ fn dovecot_noselect_parents_keep_the_tree_through_export() {
         objects: None,
         prune: Prune::Keep,
         confirm: Confirm::Assume,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     })
     .run(RunOptions {
         archive: archive.clone(),

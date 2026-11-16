@@ -355,6 +355,7 @@ fn graph_import_survives_a_full_export_to_stalwart() {
         objects: None,
         prune: Prune::Keep,
         confirm: Confirm::Assume,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     })
     .run(RunOptions {
         archive: archive.clone(),

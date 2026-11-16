@@ -134,6 +134,7 @@ fn export_email_already_exists_is_matched_not_failed() {
         objects: None,
         prune: Prune::Keep,
         confirm: Confirm::Assume,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     })
     .run(RunOptions {
         archive: archive.clone(),
@@ -276,6 +277,7 @@ fn export_mailbox_name_collision_merges_without_create() {
         objects: None,
         prune: Prune::Keep,
         confirm: Confirm::Assume,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     })
     .run(RunOptions {
         archive: archive.clone(),
@@ -435,6 +437,7 @@ fn export_mailbox_already_exists_maps_existing_id() {
         objects: None,
         prune: Prune::Keep,
         confirm: Confirm::Assume,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     })
     .run(RunOptions {
         archive: archive.clone(),
@@ -905,6 +908,7 @@ fn export_cfg_objects(base: &str, objects: Vec<ObjectType>) -> Export {
         objects: Some(objects.into()),
         prune: Prune::Keep,
         confirm: Confirm::Assume,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     }
 }
 
@@ -4909,6 +4913,7 @@ fn run_export(archive: &Path, base: &str, max_retries: u32) -> sync::Summary {
         objects: None,
         prune: Prune::Keep,
         confirm: Confirm::Assume,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     })
     .run(RunOptions {
         archive: archive.to_path_buf(),

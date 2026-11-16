@@ -394,6 +394,7 @@ fn managesieve_round_trip_via_jmap_export_converges() {
         objects: Some(vec![vandelay::types::ObjectType::SieveScript].into()),
         prune: Prune::Keep,
         confirm: Confirm::Prompt,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     };
     let first = export_cfg
         .run(export_common)
@@ -431,6 +432,7 @@ fn managesieve_round_trip_via_jmap_export_converges() {
         objects: Some(vec![vandelay::types::ObjectType::SieveScript].into()),
         prune: Prune::Keep,
         confirm: Confirm::Prompt,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     };
     let second = export_cfg2
         .run(export_common2)

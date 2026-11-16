@@ -15,7 +15,6 @@ use crate::jmap::wire::JmapId;
 use crate::sync::pool::Pool;
 
 const MAX_INFLIGHT_BLOBS: usize = 64;
-const MAX_INFLIGHT_BYTES: u64 = 256 * 1024 * 1024;
 
 type UploadJob = (BlobId, Vec<u8>);
 type UploadDone = (BlobId, u64, Result<JmapId, JmapError>);
@@ -60,6 +59,7 @@ impl Budget {
 
 pub(super) struct UploadPool {
     pool: Pool<UploadJob, UploadDone>,
+    max_bytes: u64,
 }
 
 impl UploadPool {
@@ -74,7 +74,10 @@ impl UploadPool {
             let res = account.upload(&bytes, content_type);
             (blob, len, res)
         });
-        UploadPool { pool }
+        UploadPool {
+            pool,
+            max_bytes: exporter.upload_buffer,
+        }
     }
 
     pub(super) fn upload(
@@ -83,7 +86,7 @@ impl UploadPool {
         blobs: &[BlobId],
     ) -> HashMap<BlobId, JmapError> {
         let mut failed = HashMap::new();
-        let mut budget = Budget::new(MAX_INFLIGHT_BLOBS, MAX_INFLIGHT_BYTES);
+        let mut budget = Budget::new(MAX_INFLIGHT_BLOBS, self.max_bytes);
         for &blob in blobs {
             if uploader.cached(blob).is_some() {
                 continue;
@@ -130,7 +133,7 @@ impl UploadPool {
                 true
             }
             Err(_) => {
-                *budget = Budget::new(MAX_INFLIGHT_BLOBS, MAX_INFLIGHT_BYTES);
+                *budget = Budget::new(MAX_INFLIGHT_BLOBS, self.max_bytes);
                 false
             }
         }

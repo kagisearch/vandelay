@@ -277,6 +277,7 @@ fn export_cfg(localpart: &str, account_id: &str, prune: Prune) -> Export {
         objects: None,
         prune,
         confirm: Confirm::Assume,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     }
 }
 

@@ -111,6 +111,7 @@ pub fn export(connect: ConnectConfig, objects: Option<Vec<ObjectType>>, prune: P
         objects: objects.map(Into::into),
         prune,
         confirm: Confirm::Assume,
+        upload_buffer: vandelay::export::DEFAULT_UPLOAD_BUFFER,
     }
 }
 

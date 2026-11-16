@@ -41,11 +41,16 @@ const EXPORT_ORDER: [ObjectType; 9] = [
     ObjectType::CalendarEvent,
 ];
 
+/// Default for [`Export::upload_buffer`].
+pub const DEFAULT_UPLOAD_BUFFER: u64 = 256 * 1024 * 1024;
+
 pub struct Export {
     pub connect: ConnectConfig,
     pub objects: Option<ObjectTypes>,
     pub prune: Prune,
     pub confirm: Confirm,
+    /// Bytes of message data read ahead of the parallel uploads.
+    pub upload_buffer: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +81,7 @@ impl Export {
             account: &account,
             mode: options.mode,
             threads: options.threads,
+            upload_buffer: self.upload_buffer,
             logger: options.logger,
         };
         ExportRun::execute(&exporter, &self)
@@ -107,6 +113,7 @@ struct Exporter<'a> {
     account: &'a JmapAccount,
     mode: RunMode,
     threads: usize,
+    upload_buffer: u64,
     logger: Logger,
 }
 
