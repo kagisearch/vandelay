@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.1.0-kagi.1] - 2026-11-16
+
+Fork release: upstream 1.1.0 plus the changes below. Released as the
+`x86_64-unknown-linux-musl` binary only.
+
+### Added
+- Export: `--upload-buffer <MiB>` bounds the message data read ahead of the parallel uploads (default 256 MiB, as before).
+
+### Fixed
+- Export: email duplicates were checked by loading every email in the target account and every message in the archive into memory first, so memory grew with both; the account's emails are now kept as key hashes, read page by page, and the archive is read in pages.
+- CalDAV, Google Takeout: an edited day of an all-day series (`RECURRENCE-ID` given as a date, or as a zoned midnight as Exchange writes it) was imported as a separate event with the same UID, so the series or the edit was lost; calcard now comes from the Stalwart repository (v1.0.3), which keeps the edit as a recurrence override. Needs a Stalwart that ships the same calcard (1.0.2 or later) to read the series back.
+
 ## [1.1.0] - 2026-11-16
 
 ### Changed
