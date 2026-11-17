@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file. This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.1.0-kagi.2] - 2026-11-17
+
+### Added
+- Google Takeout: `--starred-mailbox <NAME>` files starred messages under that mailbox, as well as their other ones, instead of giving them the `$flagged` keyword. For targets where `$flagged` means more than a star (for example, pinned to the top of a list).
+
 ## [1.1.0-kagi.1] - 2026-11-16
 
 Fork release: upstream 1.1.0 plus the changes below. Released as the
