@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file. This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.1.0-kagi.4] - 2026-11-17
+
+### Added
+- Maildir: `--starred-mailbox <NAME>` files flagged messages under that mailbox, as well as their folder, instead of giving them the `$flagged` keyword, as the Google Takeout option does. A folder of that name in the Maildir is reused, and a flag changed between runs moves the message in or out.
+
 ## [1.1.0-kagi.3] - 2026-11-17
 
 ### Fixed
