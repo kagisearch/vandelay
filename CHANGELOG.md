@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file. This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.1.0-kagi.3] - 2026-11-17
+
+### Fixed
+- Export: a blob upload the server answers with 500 (for example, its blob store timing out) is retried with the usual backoff, up to `--retries`, instead of failing that message. API calls still treat 500 as final, since the call may have partly applied.
+
 ## [1.1.0-kagi.2] - 2026-11-17
 
 ### Added
