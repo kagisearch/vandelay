@@ -25,4 +25,6 @@ pub struct MaildirImport {
     pub automap: Automap,
     pub deleted: DeletedMessages,
     pub source_change: SourceChange,
+    /// Files flagged messages under this mailbox instead of `$flagged`.
+    pub starred_mailbox: Option<String>,
 }

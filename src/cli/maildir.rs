@@ -66,6 +66,13 @@ pub struct MaildirImportArgs {
     )]
     allow_source_change: bool,
 
+    #[arg(
+        long,
+        value_name = "NAME",
+        help = "File flagged messages under this mailbox instead of flagging them"
+    )]
+    starred_mailbox: Option<String>,
+
     #[command(flatten)]
     global: GlobalArgs,
 }
@@ -102,6 +109,7 @@ impl MaildirImportArgs {
                 } else {
                     SourceChange::Reject
                 },
+                starred_mailbox: self.starred_mailbox,
             },
         ))
     }

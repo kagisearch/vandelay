@@ -13,7 +13,7 @@ use std::time::UNIX_EPOCH;
 use mail_parser::mailbox::maildir::Flag;
 use rusqlite::params;
 
-use crate::archive::rows::EmailRecord;
+use crate::archive::rows::{EmailRecord, Write};
 use crate::archive::{LocalId, SourceId, Store};
 use crate::console::Grouped;
 use crate::import::imap::DeletedMessages;
@@ -74,6 +74,14 @@ pub(super) struct FolderWriter<'a> {
     pub folder: &'a str,
     pub mailbox: LocalId,
     pub deleted: DeletedMessages,
+    /// Where flagged messages are filed instead of getting `$flagged`.
+    pub starred: Option<LocalId>,
+}
+
+/// The mailboxes a message is filed in and the keywords it keeps.
+pub(super) struct Placement {
+    pub mailboxes: Vec<LocalId>,
+    pub keywords: String,
 }
 
 impl DiskListing {
@@ -190,6 +198,24 @@ impl StoredKeywords {
 }
 
 impl FolderWriter<'_> {
+    /// Files the message in its folder. With a starred mailbox, a flagged
+    /// message goes there as well and loses `$flagged`, for targets where a
+    /// flag means something other than a star (pinned to the top of a list,
+    /// say).
+    pub fn place(&self, mut translation: Translation) -> Placement {
+        let mut mailboxes = vec![self.mailbox];
+        if let Some(starred) = self.starred
+            && translation.keywords.remove("$flagged")
+            && starred != self.mailbox
+        {
+            mailboxes.push(starred);
+        }
+        Placement {
+            mailboxes,
+            keywords: translation.keywords.to_json(),
+        }
+    }
+
     pub fn insert_new(&self, entry: &DiskEntry) -> Result<Option<LocalId>, InsertError> {
         let bytes = fs::read(&entry.path)?;
         let translation = Translation::from_flags(&entry.flags, self.deleted);
@@ -203,11 +229,12 @@ impl FolderWriter<'_> {
         let received_at = entry.received_at(date_header.as_deref());
         let blob = self.store.blobs().intern(&bytes)?;
         let message_match = index.to_json();
+        let placement = self.place(translation);
         let local = self.store.emails().insert(&EmailRecord {
             blob,
             received_at: &received_at,
-            mailboxes: &[self.mailbox],
-            keywords: &translation.keywords.to_json(),
+            mailboxes: &placement.mailboxes,
+            keywords: &placement.keywords,
             message_match: Some(&message_match),
         })?;
         self.store
@@ -226,11 +253,26 @@ impl FolderWriter<'_> {
         if translation.has_trashed_flag && self.deleted == DeletedMessages::Skip {
             return Ok(PresentOutcome::DeleteRequested);
         }
-        let expected = translation.keywords.to_json();
-        if stored == expected {
+        let expected = self.place(translation);
+        // A flag toggled with a starred mailbox moves the message in or out of
+        // that mailbox, which the stored keywords alone do not show.
+        if self.starred.is_some() {
+            let written = self.store.emails().update_placement(
+                local,
+                &expected.mailboxes,
+                &expected.keywords,
+            )?;
+            return Ok(match written {
+                Write::Changed => PresentOutcome::KeywordsUpdated,
+                Write::Unchanged => PresentOutcome::Unchanged,
+            });
+        }
+        if stored == expected.keywords {
             return Ok(PresentOutcome::Unchanged);
         }
-        self.store.emails().update_keywords(local, &expected)?;
+        self.store
+            .emails()
+            .update_keywords(local, &expected.keywords)?;
         Ok(PresentOutcome::KeywordsUpdated)
     }
 
@@ -373,6 +415,7 @@ mod tests {
                 folder: "INBOX",
                 mailbox: self.mailbox,
                 deleted,
+                starred: None,
             }
         }
 

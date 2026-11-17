@@ -38,6 +38,7 @@ struct Counts {
 struct MaildirRun {
     run: ImportRun,
     deleted: DeletedMessages,
+    starred_mailbox: Option<String>,
     counts: Counts,
 }
 
@@ -61,6 +62,7 @@ impl MaildirImport {
             automap,
             deleted,
             source_change,
+            starred_mailbox,
         } = self;
         let canonical = match fs::canonicalize(&maildir) {
             Ok(canonical) => canonical,
@@ -102,6 +104,7 @@ impl MaildirImport {
         let mut maildir = MaildirRun {
             run,
             deleted,
+            starred_mailbox,
             counts: Counts::default(),
         };
         let result = maildir.execute(&resolved);
@@ -181,6 +184,7 @@ impl MaildirRun {
         };
         let local = self.run.store().maildir_ids(source).folders()?;
         let mailboxes = self.upsert_mailboxes(source, resolved)?;
+        let starred = self.ensure_starred(source, &mailboxes)?;
         self.sweep_vanished(source, local, resolved)?;
         let logger = self.logger();
         for folder in resolved.iter().filter(|f| !f.is_ephemeral()) {
@@ -192,7 +196,7 @@ impl MaildirRun {
                 self.counts.email.failed += 1;
                 continue;
             };
-            if let Err(e) = self.reconcile_folder(source, folder, mailbox) {
+            if let Err(e) = self.reconcile_folder(source, folder, mailbox, starred) {
                 if e.aborts_run() {
                     return Err(e);
                 }
@@ -263,13 +267,50 @@ impl MaildirRun {
         Ok(local_ids)
     }
 
+    /// The mailbox flagged messages are filed under, when one was asked for:
+    /// the folder of that name if the Maildir has one, otherwise a mailbox of
+    /// its own, recorded as a folder with no messages so later runs reuse it.
+    fn ensure_starred(
+        &mut self,
+        source: SourceId,
+        mailboxes: &HashMap<&str, LocalId>,
+    ) -> Result<Option<LocalId>, Error> {
+        let Some(name) = self.starred_mailbox.as_deref() else {
+            return Ok(None);
+        };
+        if let Some(&id) = mailboxes.get(name) {
+            return Ok(Some(id));
+        }
+        let store = self.run.store();
+        let ids = store.maildir_ids(source);
+        if let Some(id) = ids.folder_id(name)? {
+            return Ok(Some(id));
+        }
+        let id = store.mailboxes().insert(&MailboxRecord {
+            name,
+            parent: None,
+            role: None,
+            sort_order: 0,
+            subscribed: Subscribed::Yes,
+        })?;
+        ids.insert_folder(name, id)?;
+        self.counts.mailbox.created += 1;
+        self.counts.mailbox.fetched += 1;
+        Ok(Some(id))
+    }
+
     fn sweep_vanished(
         &mut self,
         source: SourceId,
         local: HashMap<String, LocalId>,
         resolved: &[ResolvedFolder],
     ) -> Result<(), Error> {
-        let on_disk: HashSet<&str> = resolved.iter().map(|f| f.name.as_str()).collect();
+        let starred = self.starred_mailbox.as_deref();
+        let on_disk: HashSet<&str> = resolved
+            .iter()
+            .map(|f| f.name.as_str())
+            .chain(starred)
+            .collect();
         let mut vanished: Vec<(String, LocalId)> = local
             .into_iter()
             .filter(|(name, _)| !on_disk.contains(name.as_str()))
@@ -313,6 +354,7 @@ impl MaildirRun {
         source: SourceId,
         folder: &ResolvedFolder,
         mailbox: LocalId,
+        starred: Option<LocalId>,
     ) -> Result<(), Error> {
         let listing = DiskListing::read(&folder.path)
             .map_err(|e| Error::Partial(format!("list {:?}: {e}", folder.path)))?;
@@ -338,6 +380,7 @@ impl MaildirRun {
             folder: &folder.name,
             mailbox,
             deleted,
+            starred,
         }
         .apply(&diff, &stored, &mut self.counts.email, logger);
         tx.commit()?;

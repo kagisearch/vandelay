@@ -28,6 +28,7 @@ fn base_cfg(root: &Path) -> MaildirImport {
         automap: Automap::Enabled,
         deleted: DeletedMessages::Skip,
         source_change: SourceChange::Reject,
+        starred_mailbox: None,
     }
 }
 

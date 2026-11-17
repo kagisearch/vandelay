@@ -41,6 +41,7 @@ fn base_cfg(root: &Path) -> MaildirImport {
         automap: Automap::Enabled,
         deleted: DeletedMessages::Skip,
         source_change: SourceChange::Reject,
+        starred_mailbox: None,
     }
 }
 
@@ -700,4 +701,154 @@ fn maildir_message_count_matches_jmap_for_same_corpus() {
     let _ = std::fs::remove_file(&md_archive);
     let _ = std::fs::remove_file(&jmap_archive);
     seeder::teardown(base_url()).expect("teardown");
+}
+
+fn starred_cfg(root: &Path) -> MaildirImport {
+    MaildirImport {
+        starred_mailbox: Some("Starred".to_owned()),
+        ..base_cfg(root)
+    }
+}
+
+/// The names of the mailboxes holding the message with this Maildir unique id.
+fn placed_in(conn: &Connection, unique_id: &str) -> Vec<String> {
+    let mut names: Vec<String> = conn
+        .prepare(
+            "SELECT m.name FROM emails e
+             JOIN sync_id_maildir s ON s.local_id = e.id AND s.type_name = 'email',
+             json_each(e.mailbox_ids) j
+             JOIN mailboxes m ON m.id = j.value
+             WHERE s.unique_id = ?1",
+        )
+        .unwrap()
+        .query_map([unique_id], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    names.sort();
+    names
+}
+
+fn count(conn: &Connection, sql: &str) -> i64 {
+    conn.query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+#[test]
+fn starred_mailbox_files_flagged_mail_as_a_mailbox() {
+    let td = tempfile::TempDir::new().unwrap();
+    build_fixture(td.path());
+    let archive = common::tmp_archive("starred-mailbox");
+    starred_cfg(td.path())
+        .run(common::live_options(&archive))
+        .into_result()
+        .expect("first");
+
+    let conn = Connection::open(&archive).unwrap();
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM emails WHERE keywords LIKE '%$flagged%'"
+        ),
+        0,
+        "no flag is kept"
+    );
+    // The flagged message keeps its folder and gains the Starred mailbox.
+    assert_eq!(placed_in(&conn, "301.M002.host"), ["2025", "Starred"]);
+    assert_eq!(placed_in(&conn, "300.M001.host"), ["2025"]);
+    drop(conn);
+
+    // A second run reuses the mailbox and leaves everything where it is.
+    let second = starred_cfg(td.path())
+        .run(common::live_options(&archive))
+        .into_result()
+        .expect("second");
+    let (_, mailboxes) = &second.per_type[0];
+    let (_, emails) = &second.per_type[1];
+    assert_eq!((mailboxes.created, mailboxes.deleted), (0, 0));
+    assert_eq!((emails.created, emails.deleted, emails.fetched), (0, 0, 0));
+    let conn = Connection::open(&archive).unwrap();
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM mailboxes WHERE name = 'Starred'"
+        ),
+        1
+    );
+    assert_eq!(placed_in(&conn, "301.M002.host"), ["2025", "Starred"]);
+    let _ = std::fs::remove_file(&archive);
+}
+
+#[test]
+fn starred_mailbox_follows_a_flag_change_between_runs() {
+    let td = tempfile::TempDir::new().unwrap();
+    ensure_maildir(td.path());
+    let path = write(
+        td.path(),
+        "cur",
+        "1.M0.host:2,S",
+        &msg("star-1", "subj", "body"),
+    );
+    let archive = common::tmp_archive("starred-toggle");
+    starred_cfg(td.path())
+        .run(common::live_options(&archive))
+        .into_result()
+        .expect("first");
+    let conn = Connection::open(&archive).unwrap();
+    assert_eq!(placed_in(&conn, "1.M0.host"), ["INBOX"]);
+    drop(conn);
+
+    let flagged = path.with_file_name("1.M0.host:2,FS");
+    fs::rename(&path, &flagged).unwrap();
+    let summary = starred_cfg(td.path())
+        .run(common::live_options(&archive))
+        .into_result()
+        .expect("flagged");
+    assert_eq!(summary.per_type[1].1.fetched, 1);
+    let conn = Connection::open(&archive).unwrap();
+    assert_eq!(placed_in(&conn, "1.M0.host"), ["INBOX", "Starred"]);
+    drop(conn);
+
+    fs::rename(&flagged, &path).unwrap();
+    starred_cfg(td.path())
+        .run(common::live_options(&archive))
+        .into_result()
+        .expect("unflagged");
+    let conn = Connection::open(&archive).unwrap();
+    assert_eq!(placed_in(&conn, "1.M0.host"), ["INBOX"]);
+    let _ = std::fs::remove_file(&archive);
+}
+
+#[test]
+fn starred_mailbox_reuses_a_folder_of_that_name() {
+    let td = tempfile::TempDir::new().unwrap();
+    ensure_maildir(td.path());
+    write(
+        td.path(),
+        "cur",
+        "1.M0.host:2,FS",
+        &msg("star-2", "subj", "body"),
+    );
+    let starred = ensure_subfolder(td.path(), ".Starred");
+    write(
+        &starred,
+        "cur",
+        "2.M0.host:2,FS",
+        &msg("star-3", "subj", "body"),
+    );
+    let archive = common::tmp_archive("starred-folder");
+    starred_cfg(td.path())
+        .run(common::live_options(&archive))
+        .into_result()
+        .expect("run");
+    let conn = Connection::open(&archive).unwrap();
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM mailboxes WHERE name = 'Starred'"
+        ),
+        1
+    );
+    assert_eq!(placed_in(&conn, "1.M0.host"), ["INBOX", "Starred"]);
+    assert_eq!(placed_in(&conn, "2.M0.host"), ["Starred"]);
+    let _ = std::fs::remove_file(&archive);
 }
