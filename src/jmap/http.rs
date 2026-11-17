@@ -36,6 +36,7 @@ const LONG_RETRY_THRESHOLD: Duration = Duration::from_secs(10);
 const STATUS_UNAUTHORIZED: u16 = 401;
 const STATUS_FORBIDDEN: u16 = 403;
 const STATUS_PAYLOAD_TOO_LARGE: u16 = 413;
+const STATUS_INTERNAL_SERVER_ERROR: u16 = 500;
 const PROTO: &str = "JMAP";
 
 struct Gates {
@@ -227,7 +228,12 @@ impl JmapClient {
                     rate_headers,
                 } => {
                     let problem = serde_json::from_slice::<Value>(&body).ok();
-                    match StatusOutcome::classify(status, problem.as_ref()) {
+                    // An upload only stores bytes under a content-derived id, so
+                    // sending it again cannot duplicate anything, and a 500 there
+                    // is usually the server's blob store timing out. An API call
+                    // that answered 500 may have partly applied, so it is not
+                    // repeated.
+                    let server_error = match StatusOutcome::classify(status, problem.as_ref()) {
                         StatusOutcome::Auth => {
                             return Err(JmapError::Auth(format!(
                                 "server returned {status}: {}",
@@ -235,14 +241,20 @@ impl JmapClient {
                             )));
                         }
                         StatusOutcome::RequestTooLarge => return Err(JmapError::RequestTooLarge),
+                        StatusOutcome::Fatal
+                            if matches!(lane, Lane::Upload)
+                                && status == STATUS_INTERNAL_SERVER_ERROR =>
+                        {
+                            true
+                        }
                         StatusOutcome::Fatal => {
                             return Err(JmapError::HttpStatus {
                                 status,
                                 body: BodyExcerpt(&body).to_string(),
                             });
                         }
-                        StatusOutcome::Retryable => {}
-                    }
+                        StatusOutcome::Retryable => false,
+                    };
                     attempt += 1;
                     core.stats().note_retry();
                     let reason = RetryReason {
@@ -256,6 +268,20 @@ impl JmapClient {
                             "{} {} kept returning {reason}",
                             exchange.method, exchange.url
                         )));
+                    }
+                    if server_error {
+                        // Not a rate limit: back off this request alone rather
+                        // than slowing every worker down.
+                        let delay = core.backoff(attempt);
+                        if delay >= LONG_RETRY_THRESHOLD {
+                            logger.warn(format_args!(
+                                "server failed the upload ({reason}); waiting {} before retry {attempt}/{max_retries}",
+                                RetryWait(delay),
+                            ));
+                        }
+                        self.log_retry(exchange, attempt, delay, &reason, &body);
+                        thread::sleep(delay);
+                        continue;
                     }
                     if retry_after.is_some() {
                         core.stats().note_retry_after();
@@ -616,6 +642,92 @@ mod tests {
         );
         assert!(started.elapsed() < Duration::from_secs(10));
         drop(holder.join().unwrap());
+    }
+
+    /// Answers one request per connection with each of `replies` in turn, and
+    /// returns how many requests it served once they are all used up.
+    fn serve(replies: Vec<(u16, &'static str)>) -> (String, std::thread::JoinHandle<usize>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/upload", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for (status, body) in &replies {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut len = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        len = value.trim().parse().unwrap();
+                    }
+                }
+                let mut request_body = vec![0; len];
+                reader.read_exact(&mut request_body).unwrap();
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            replies.len()
+        });
+        (url, server)
+    }
+
+    fn fast_retry(max_retries: u32) -> RetryPolicy {
+        let mut retry = RetryPolicy::new(max_retries);
+        retry.base = Duration::from_millis(1);
+        retry.cap = Duration::from_millis(5);
+        retry
+    }
+
+    // A blob store that times out behind the server shows up as a 500; the
+    // upload is sent again rather than losing the message.
+    #[test]
+    fn upload_retries_internal_server_error() {
+        let (url, server) = serve(vec![
+            (500, r#"{"type":"about:blank","status":500}"#),
+            (200, r#"{"blobId":"b1","size":3}"#),
+        ]);
+        let client = client(fast_retry(3));
+        let res = client
+            .upload(&url, "message/rfc822", b"abc")
+            .expect("upload should succeed on the retry");
+        assert_eq!(res["blobId"], "b1");
+        assert_eq!(server.join().unwrap(), 2);
+    }
+
+    #[test]
+    fn upload_gives_up_after_max_retries_of_internal_server_error() {
+        let (url, server) = serve(vec![(500, "{}"), (500, "{}"), (500, "{}")]);
+        let client = client(fast_retry(2));
+        let err = client.upload(&url, "message/rfc822", b"abc").unwrap_err();
+        assert!(
+            matches!(&err, JmapError::RetriesExhausted(m) if m.contains("500")),
+            "got {err:?}"
+        );
+        assert_eq!(server.join().unwrap(), 3);
+    }
+
+    // An API call that answered 500 may have partly applied, so it is not sent
+    // again.
+    #[test]
+    fn api_call_does_not_retry_internal_server_error() {
+        let (url, server) = serve(vec![(500, "{}")]);
+        let client = client(fast_retry(3));
+        let err = client.post_json(&url, &serde_json::json!({})).unwrap_err();
+        assert!(
+            matches!(err, JmapError::HttpStatus { status: 500, .. }),
+            "got {err:?}"
+        );
+        assert_eq!(server.join().unwrap(), 1);
     }
 
     #[test]
